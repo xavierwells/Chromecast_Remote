@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#090b0f" />
+    <meta name="description" content="Private local-network Chromecast control." />
+    <title>CastDeck — local Chromecast control</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="grain" aria-hidden="true"></div>
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="CastDeck home">
+        <span class="brand-mark"><i></i><i></i><i></i></span>
+        <span>CASTDECK</span>
+      </a>
+      <div class="network-state"><span class="pulse-dot"></span><span>Local network</span></div>
+      <button class="icon-button" id="refreshButton" aria-label="Refresh devices" title="Refresh devices">↻</button>
+    </header>
+
+    <main class="app-shell">
+      <aside class="device-rail">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">AVAILABLE NOW</p>
+            <h1>Your spaces</h1>
+          </div>
+          <span class="count" id="deviceCount">0</span>
+        </div>
+        <div class="device-list" id="deviceList" aria-live="polite"></div>
+        <div class="privacy-note"><span>⌂</span><p><strong>Stays at home.</strong><br />Commands travel only across your local network.</p></div>
+      </aside>
+
+      <section class="control-stage" id="controlStage">
+        <div class="ambient-orb orb-one"></div><div class="ambient-orb orb-two"></div>
+        <div class="empty-state" id="emptyState">
+          <div class="cast-illustration"><span></span><span></span><span></span></div>
+          <p class="eyebrow">READY TO CONNECT</p>
+          <h2>Pick a room.<br />Set the mood.</h2>
+          <p>Select a Chromecast from the left to control what’s playing.</p>
+        </div>
+
+        <div class="controller hidden" id="controller">
+          <div class="device-header">
+            <div>
+              <p class="eyebrow">NOW CONTROLLING</p>
+              <h2 id="selectedName">Living Room</h2>
+              <p class="device-meta" id="selectedMeta">Chromecast · 192.168.1.42</p>
+            </div>
+            <span class="online-pill"><i></i> ONLINE</span>
+          </div>
+
+          <div class="now-playing">
+            <div class="artwork" id="artwork"><div class="artwork-glyph">◉</div></div>
+            <div class="track-info">
+              <p class="eyebrow" id="playbackLabel">NOW PLAYING</p>
+              <h3 id="mediaTitle">Nothing playing</h3>
+              <p id="mediaSubtitle">Send a media URL below to begin</p>
+              <div class="timeline">
+                <input id="seekSlider" type="range" min="0" max="100" value="0" aria-label="Playback position" />
+                <div><span id="elapsedTime">0:00</span><span id="durationTime">0:00</span></div>
+              </div>
+              <div class="transport">
+                <div class="skip-cluster" aria-label="Skip backward">
+                  <button class="transport-secondary skip-button" data-skip="-60" aria-label="Back 60 seconds">−60</button>
+                  <button class="transport-secondary skip-button" data-skip="-15" aria-label="Back 15 seconds">−15</button>
+                  <button class="transport-secondary skip-button" data-skip="-10" aria-label="Back 10 seconds">−10</button>
+                  <button class="transport-secondary skip-button" data-skip="-5" aria-label="Back 5 seconds">−5</button>
+                </div>
+                <button class="play-button" id="playPauseButton" aria-label="Play">▶</button>
+                <div class="skip-cluster" aria-label="Skip forward">
+                  <button class="transport-secondary skip-button" data-skip="5" aria-label="Forward 5 seconds">+5</button>
+                  <button class="transport-secondary skip-button" data-skip="10" aria-label="Forward 10 seconds">+10</button>
+                  <button class="transport-secondary skip-button" data-skip="15" aria-label="Forward 15 seconds">+15</button>
+                  <button class="transport-secondary skip-button" data-skip="60" aria-label="Forward 60 seconds">+60</button>
+                </div>
+                <button class="stop-button" id="stopButton" aria-label="Stop playback">■</button>
+              </div>
+              <div class="seek-stack" id="seekStack" aria-live="polite"></div>
+            </div>
+          </div>
+
+          <div class="lower-grid">
+            <section class="panel volume-panel">
+              <div class="panel-title"><span>VOLUME</span><strong id="volumeValue">42%</strong></div>
+              <div class="volume-row">
+                <button class="mute-button" id="muteButton" aria-label="Mute">◖</button>
+                <input id="volumeSlider" type="range" min="0" max="100" value="42" aria-label="Volume" />
+                <span>◗</span>
+              </div>
+            </section>
+
+            <section class="panel cast-panel">
+              <div class="panel-title"><span>CAST A MEDIA URL</span><small>HTTP(S)</small></div>
+              <form id="castForm">
+                <label class="url-field"><span>⌁</span><input id="mediaUrl" type="url" required placeholder="https://example.com/video.mp4" autocomplete="off" /></label>
+                <div class="form-row">
+                  <input id="mediaTitleInput" type="text" placeholder="Title (optional)" maxlength="80" />
+                  <select id="contentType" aria-label="Media format">
+                    <option value="video/mp4">MP4 video</option>
+                    <option value="application/x-mpegURL">HLS stream</option>
+                    <option value="audio/mpeg">MP3 audio</option>
+                    <option value="audio/aac">AAC audio</option>
+                  </select>
+                  <button type="submit" class="cast-button">CAST <span>›</span></button>
+                </div>
+              </form>
+            </section>
+          </div>
+
+          <section class="panel library-panel">
+            <div class="panel-title library-heading">
+              <div><span>LOCAL MEDIA</span><small>D:\Chromecast_Remote\media</small></div>
+              <button id="mediaRefreshButton" class="library-refresh" type="button">REFRESH ↻</button>
+            </div>
+            <div id="localMediaList" class="media-list" aria-live="polite"></div>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="/app.js" defer></script>
+  </body>
+</html>
