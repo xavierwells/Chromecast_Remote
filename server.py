@@ -141,9 +141,9 @@ def default_demo_status(device_id: str) -> dict:
     return {
         "volume": {"level": 0.42, "muted": False},
         "playerState": "PLAYING" if active else "IDLE",
-        "media": {"title": "Big Buck Bunny", "subtitle": "Local media demo", "image": "",
+        "media": {"title": "Nightmare on Elm Street", "subtitle": "Movie night demo", "image": "",
                   "currentTime": 142, "duration": 596,
-                  "contentId": "https://example.com/big-buck-bunny.mp4"} if active else None,
+                  "contentId": "https://example.com/movie-night.mp4"} if active else None,
     }
 
 
