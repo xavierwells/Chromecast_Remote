@@ -19,6 +19,7 @@ Discover receivers, see what is playing, control playback and volume, build a sh
 - Phone-ready interface available to devices on the same Wi-Fi
 - Windows notification-area controls and a phone QR code
 - PWA manifest, home-screen icon, and secure-context service worker
+- Experimental Android notification and lock-screen controls, enabled per phone session
 - Server-sent status updates, a live in-browser timer, and recovery polling
 - Self-contained demo mode that never contacts a real Chromecast
 
@@ -50,6 +51,14 @@ Closing the window minimizes CastDeck to the Windows notification area. Right-cl
 While LAN access is enabled, CastDeck advertises `http://castdeck.local:4173` using mDNS and also shows the numeric-IP fallback. Some routers block `.local` discovery, so the server window includes a **Phone QR** button that always uses the numeric LAN address.
 
 After opening CastDeck once, use the phone browser's **Add to Home Screen** command. CastDeck includes a PWA manifest, standalone display metadata, an app icon, and a service worker. Browsers generally require HTTPS for full service-worker installation; over ordinary LAN HTTP, some phones create a home-screen web shortcut instead. Either option removes the need to remember the address after the first visit.
+
+### Background phone controls (experimental)
+
+Select a receiver, then tap **Enable background controls** below its playback buttons. CastDeck plays a locally generated silent audio loop and registers browser media controls for play/pause, seeking, and **Next** when the queue has another item. Chrome on Android may then show controls on the lock screen or in its media notification and keep the page active longer. This is an experiment: silent media may be ignored, and Android may suspend the page or its network connection anyway. Real-phone behavior needs testing on your browser and Android version.
+
+The loop can pause other audio apps on your phone and use extra battery. **Turn off**, dismissing the media session via its Stop action, switching receivers, or navigating away releases the phone session without stopping the cast. If Android pauses the loop, tap **Resume background controls**. Enable it again after a page reload; it never starts automatically.
+
+Phone volume keys still adjust phone volume. The PC owns CastDeck's Chromecast connection; the web Media Session API exposes playback actions but no remote volume handler. Use the webpage's volume slider for Chromecast volume. The server queue continues when the phone sleeps, even with background controls disabled.
 
 ### About No-IP DUC
 
@@ -173,6 +182,7 @@ The browser is only the interface. The local Python server handles discovery and
 castdeck/
 ├── public/
 │   ├── app.js          # Browser controls and live status handling
+│   ├── background-remote.js # Opt-in browser media session for phone controls
 │   ├── icon-192.png / icon-512.png
 │   ├── icon.svg        # PWA and browser icon
 │   ├── index.html      # Responsive controller interface

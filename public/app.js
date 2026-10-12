@@ -1,7 +1,7 @@
 const state = { devices: [], selectedId: localStorage.getItem('castdeck-selected'), status: null, statusAt: 0, mediaFiles: [], busy: false, seekOffset: 0, seekBase: 0, seekTimer: null };
 
 const els = Object.fromEntries([
-  'deviceList','deviceCount','emptyState','controller','selectedName','selectedMeta','mediaTitle','mediaSubtitle','playbackLabel','artwork','seekSlider','elapsedTime','durationTime','playPauseButton','stopButton','seekStack','volumeSlider','volumeValue','muteButton','castForm','mediaUrl','mediaTitleInput','contentType','urlQueueButton','queueCount','queueList','queueNextButton','queueClearButton','mediaPlayAllButton','mediaRefreshButton','localMediaList','refreshButton','toast'
+  'deviceList','deviceCount','emptyState','controller','selectedName','selectedMeta','mediaTitle','mediaSubtitle','playbackLabel','artwork','seekSlider','elapsedTime','durationTime','playPauseButton','stopButton','seekStack','backgroundButton','backgroundOffButton','backgroundHint','volumeSlider','volumeValue','muteButton','castForm','mediaUrl','mediaTitleInput','contentType','urlQueueButton','queueCount','queueList','queueNextButton','queueClearButton','mediaPlayAllButton','mediaRefreshButton','localMediaList','refreshButton','toast'
 ].map((id) => [id, document.getElementById(id)]));
 
 function selectedDevice() { return state.devices.find((device) => device.id === state.selectedId); }
@@ -87,7 +87,7 @@ function renderSelection() {
   const device = selectedDevice();
   els.emptyState.classList.toggle('hidden', Boolean(device));
   els.controller.classList.toggle('hidden', !device);
-  if (!device) return;
+  if (!device) { backgroundRemote.disable(); return; }
   els.selectedName.textContent = device.name;
   els.selectedMeta.textContent = `${device.model} · ${device.host}`;
   renderStatus();
@@ -123,6 +123,7 @@ function renderStatus() {
     els.artwork.style.backgroundImage = '';
   }
   renderQueue(Array.isArray(status.queue) ? status.queue : []);
+  backgroundRemote.update();
 }
 
 async function loadDevices() {
@@ -136,6 +137,7 @@ async function loadMedia() {
 }
 
 async function selectDevice(id) {
+  if (id !== state.selectedId) backgroundRemote.disable();
   resetSeekQueue();
   state.selectedId = id;
   localStorage.setItem('castdeck-selected', id);
@@ -148,16 +150,20 @@ async function selectDevice(id) {
 
 async function loadStatus(silent = false) {
   if (!state.selectedId || state.busy || state.seekTimer) return;
-  try { setStatus(await api(`/api/devices/${encodeURIComponent(state.selectedId)}/status`)); }
+  const deviceId = state.selectedId;
+  try {
+    const status = await api(`/api/devices/${encodeURIComponent(deviceId)}/status`);
+    if (deviceId === state.selectedId) setStatus(status);
+  }
   catch (error) { if (!silent) showToast(error.message, true); }
 }
 
-async function control(action, body = {}) {
-  if (!state.selectedId || state.busy) return;
+async function control(action, body = {}, deviceId = state.selectedId) {
+  if (!deviceId || deviceId !== state.selectedId || state.busy) return;
   state.busy = true;
   try {
-    const result = await api(`/api/devices/${encodeURIComponent(state.selectedId)}/${action}`, { method: 'POST', body: JSON.stringify(body) });
-    if (result && result.volume) setStatus(result);
+    const result = await api(`/api/devices/${encodeURIComponent(deviceId)}/${action}`, { method: 'POST', body: JSON.stringify(body) });
+    if (deviceId === state.selectedId && result && result.volume) setStatus(result);
     await loadStatus(true);
   } catch (error) { showToast(error.message, true); }
   finally { state.busy = false; renderQueue(Array.isArray(state.status && state.status.queue) ? state.status.queue : []); }
@@ -253,6 +259,36 @@ els.urlQueueButton.addEventListener('click', async () => {
   if (!els.mediaUrl.reportValidity()) return;
   await castPayload('enqueue', { url: els.mediaUrl.value, title: els.mediaTitleInput.value, contentType: els.contentType.value }, els.urlQueueButton, 'Media added to Up Next');
 });
+
+const backgroundRemote = new CastDeckBackgroundRemote({
+  getContext: () => ({ id: state.selectedId, deviceName: selectedDevice() && selectedDevice().name, status: state.status, statusAt: state.statusAt }),
+  send: (action, body, deviceId) => control(action, body, deviceId),
+  refresh: () => loadStatus(true),
+  onChange: renderBackgroundControls,
+  onError: (message) => showToast(message, true),
+});
+
+function renderBackgroundControls() {
+  const remote = backgroundRemote;
+  els.backgroundButton.disabled = !remote.supported || remote.pending;
+  els.backgroundButton.setAttribute('aria-pressed', String(remote.enabled));
+  els.backgroundOffButton.classList.toggle('hidden', !remote.enabled);
+  els.backgroundButton.textContent = remote.pending ? 'Enabling…'
+    : remote.suspended ? 'Resume background controls'
+    : remote.enabled ? 'Background controls on — turn off' : 'Enable background controls';
+  els.backgroundHint.textContent = !remote.supported ? 'This browser does not support media notification controls. Try Chrome on Android.'
+    : remote.suspended ? 'Phone playback was suspended. Tap Resume to try again; Chromecast keeps playing.'
+    : remote.enabled ? 'Check your notification or lock screen for controls. Android may still suspend this page. Volume keys control the phone.'
+    : 'Experimental phone notification controls. Uses silent audio; may pause other phone audio. Volume keys still control the phone.';
+}
+
+els.backgroundButton.addEventListener('click', () => {
+  if (backgroundRemote.enabled && !backgroundRemote.suspended) backgroundRemote.disable();
+  else void backgroundRemote.enable();
+});
+els.backgroundOffButton.addEventListener('click', () => backgroundRemote.disable());
+window.addEventListener('pagehide', () => backgroundRemote.disable());
+renderBackgroundControls();
 
 const events = new EventSource('/api/events');
 events.addEventListener('devices', (event) => { state.devices = JSON.parse(event.data); renderDevices(); renderSelection(); });

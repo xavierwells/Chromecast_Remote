@@ -86,6 +86,11 @@
                 <button class="stop-button" id="stopButton" aria-label="Stop playback">■</button>
               </div>
               <div class="seek-stack" id="seekStack" aria-live="polite"></div>
+              <div class="background-controls">
+                <button id="backgroundButton" type="button" aria-pressed="false" aria-describedby="backgroundHint">Enable background controls</button>
+                <button id="backgroundOffButton" type="button" class="hidden">Turn off</button>
+                <p id="backgroundHint" role="status">Experimental phone notification controls. Uses silent audio; may pause other phone audio. Volume keys still control the phone.</p>
+              </div>
             </div>
           </div>
 
@@ -144,6 +149,7 @@
     </main>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="/background-remote.js" defer></script>
     <script src="/app.js" defer></script>
   </body>
 </html>
