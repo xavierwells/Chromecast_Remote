@@ -65,6 +65,10 @@ input[type=range]::-webkit-slider-thumb { appearance: none; width: 14px; height:
 .background-controls button[aria-pressed=true] { border-color: var(--lime); color: var(--lime); }
 .background-controls button:disabled { opacity: .5; cursor: default; }
 .background-controls p { color: var(--muted); font-size: 10px; line-height: 1.6; margin: 8px 0 0; max-width: 420px; }
+.phone-cast-controls { margin: 12px 0; }
+.phone-cast-controls button { border: 1px solid var(--lime); border-radius: 8px; background: var(--panel-2); color: var(--lime); padding: 10px 12px; min-height: 40px; font-size: 11px; cursor: pointer; }
+.phone-cast-controls button:disabled { opacity: .5; cursor: default; }
+.phone-cast-controls p { color: var(--muted); font-size: 11px; line-height: 1.6; margin: 8px 0 0; }
 .queue-error { color: var(--coral); font-size: 12px; line-height: 1.6; padding: 12px 20px; margin: 0; border-bottom: 1px solid var(--line); }
 .lower-grid { display: grid; grid-template-columns: minmax(230px,.75fr) minmax(380px,1.25fr); gap: 14px; }.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 20px 22px; }.panel-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 19px; font: 500 9px "Cascadia Mono", Consolas, monospace; letter-spacing: .15em; color: var(--muted); }.panel-title strong { color: var(--text); font-size: 12px; }.panel-title small { letter-spacing: .08em; color: #626a76; }
 .volume-row { display: grid; grid-template-columns: 32px 1fr 18px; gap: 12px; align-items: center; color: var(--muted); }.mute-button { border: 0; background: transparent; cursor: pointer; font-size: 18px; padding: 0; }.mute-button.active { color: var(--coral); }

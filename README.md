@@ -19,6 +19,8 @@ Discover receivers, see what is playing, control playback and volume, build a sh
 - Phone-ready interface available to devices on the same Wi-Fi
 - Windows notification-area controls and a phone QR code
 - PWA manifest, home-screen icon, and secure-context service worker
+- Built-in HTTPS with a unique local certificate authority per PC
+- Join-only phone Cast connection for an Android volume-button trial
 - Experimental Android notification and lock-screen controls, enabled per phone session
 - Server-sent status updates, a live in-browser timer, and recovery polling
 - Self-contained demo mode that never contacts a real Chromecast
@@ -48,9 +50,43 @@ Closing the window minimizes CastDeck to the Windows notification area. Right-cl
 
 ## Easy phone access
 
-While LAN access is enabled, CastDeck advertises `http://castdeck.local:4173` using mDNS and also shows the numeric-IP fallback. Some routers block `.local` discovery, so the server window includes a **Phone QR** button that always uses the numeric LAN address.
+The Windows launcher enables HTTPS by default at `https://castdeck.local:4175` and shows the numeric-IP fallback. Port `4173` continues to serve HTTP media and the legacy controller. CastDeck advertises its LAN name using mDNS. Some routers block `.local` discovery, so **Phone QR** uses the numeric LAN address.
 
-After opening CastDeck once, use the phone browser's **Add to Home Screen** command. CastDeck includes a PWA manifest, standalone display metadata, an app icon, and a service worker. Browsers generally require HTTPS for full service-worker installation; over ordinary LAN HTTP, some phones create a home-screen web shortcut instead. Either option removes the need to remember the address after the first visit.
+After trusting the HTTPS certificate and opening CastDeck, use the phone browser's **Install app** or **Add to Home Screen** command. CastDeck includes a PWA manifest, standalone display metadata, an app icon, and a service worker. Trusted HTTPS supports the full PWA flow; a LAN HTTP bookmark may only create a web shortcut. Installation menus vary by browser.
+
+### HTTPS setup on Android
+
+Let’s Encrypt is not required. CastDeck creates a local CA unique to your PC and a server certificate for `castdeck.local`, `localhost`, the current LAN IP, and `127.0.0.1`. Certificates and private keys are stored in `%LOCALAPPDATA%\CastDeck\certificates`, outside the web directory. The app never installs trust automatically and never includes keys in the EXE.
+
+1. Start the updated Windows app with HTTPS enabled in **Settings**. Do this after ongoing locally served playback finishes.
+2. Open **HTTPS / Android Setup** and scan its QR code to download `castdeck-ca.crt` over the existing HTTP port. Only the public certificate is downloadable.
+3. Verify the downloaded certificate's SHA-256 fingerprint against the Windows setup window. Only install the certificate from your own PC.
+4. In Android settings, locate **Install a certificate → CA certificate**, usually under Security/Privacy, More security settings, or Encryption & credentials. Select `castdeck-ca.crt`. Android may require your device unlock and warn that this authority is trusted; menu names vary.
+5. Open the HTTPS **Phone QR** link, normally `https://<PC-LAN-IP>:4175`, in Android Chrome. It should load without a certificate warning. Recreate any old HTTP home-screen shortcut using this HTTPS address.
+
+For **Open Controller** on Windows, import the same public CA into the current user's **Trusted Root Certification Authorities** certificate store. The setup window can open the certificate folder; you perform the trust installation yourself. Alternatively, keep using the HTTP controller on the PC until trust is configured.
+
+Each other server PC has a different CA, so trust that PC's certificate separately. If its LAN IP changes, starting CastDeck again renews the server certificate while retaining the same CA. A DHCP reservation avoids address changes. Keep the CA private key on the server; do not share or commit the certificates directory.
+
+### Join the existing Cast session from the phone
+
+On the trusted HTTPS controller, select a receiver playing through **Default Media Receiver**, then tap **Join current cast**. The page loads Google's Web Sender SDK and asks to join the receiver's existing session ID. It does not offer a receiver chooser, launch a receiver app, load media, stop playback, or fall back to creating a session. **Detach phone** leaves only the phone's sender connection. An expired or incompatible session fails without replacing current playback.
+
+After joining, try Android's hardware volume buttons. This is experimental: attaching the phone creates a real Cast sender connection, but Chrome and Android determine volume-key routing. Actual phone behavior needs testing. Internet access is required to load Google's SDK. The first version supports the Default Media Receiver (`CC1AD845`), used for CastDeck's local files and media URLs; other apps continue to use PC controls. Joining is disabled in demo mode.
+
+The silent background mode is turned off while joining, so it does not compete with native Cast controls. The PC keeps serving files and managing Up Next. If Chrome cannot discover a session started by the PC, the join attempt times out rather than starting a replacement.
+
+### Using a public certificate instead
+
+If you own a domain, a public certificate avoids installing a local CA. Let’s Encrypt's DNS-01 validation can work while the controller stays LAN-only; configure that domain to resolve to the PC's LAN address on your network. A No-IP public address alone does not provide a certificate or local DNS routing. Do not open internet-facing ports for CastDeck just to obtain a certificate.
+
+The source server accepts an existing PEM chain/key pair:
+
+```powershell
+.venv\Scripts\python server.py --host 0.0.0.0 --port 4173 --https-port 4175 --tls-cert "C:\Certs\fullchain.pem" --tls-key "C:\Certs\privkey.pem"
+```
+
+For the built-in local CA from source, use `--https-port 4175 --cert-dir "<private-local-certificate-folder>"` instead. Renew public certificates using your ACME client; restart CastDeck after ongoing local playback finishes to load the renewed files.
 
 ### Background phone controls (experimental)
 
@@ -58,7 +94,7 @@ Select a receiver, then tap **Enable background controls** below its playback bu
 
 The loop can pause other audio apps on your phone and use extra battery. **Turn off**, dismissing the media session via its Stop action, switching receivers, or navigating away releases the phone session without stopping the cast. If Android pauses the loop, tap **Resume background controls**. Enable it again after a page reload; it never starts automatically.
 
-Phone volume keys still adjust phone volume. The PC owns CastDeck's Chromecast connection; the web Media Session API exposes playback actions but no remote volume handler. Use the webpage's volume slider for Chromecast volume. The server queue continues when the phone sleeps, even with background controls disabled.
+In this silent-audio mode, phone volume keys still adjust phone volume. The web Media Session API exposes playback actions but no remote volume handler. Use the webpage's volume slider, or try the separate HTTPS **Join current cast** feature for a real phone-side Cast connection. The server queue continues when the phone sleeps, even with background controls disabled.
 
 ### About No-IP DUC
 
@@ -196,6 +232,7 @@ castdeck/
 ├── tests/test_queue.py # Queue progression and duplicate-finish coverage
 ├── tools/generate-icons.py
 ├── launcher.py         # Native server configurator and EXE entry point
+├── https_support.py    # Per-PC local CA and HTTPS certificate generation
 ├── server.py           # HTTP server, Cast bridge, SSE, and media serving
 ├── requirements.txt    # Python dependency lock
 ├── requirements-build.txt

@@ -13,3 +13,7 @@ media/
 build/
 dist/
 *.spec
+certificates/
+*.pem
+*.key
+*.crt

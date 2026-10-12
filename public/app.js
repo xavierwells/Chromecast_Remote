@@ -1,8 +1,10 @@
 const state = { devices: [], selectedId: localStorage.getItem('castdeck-selected'), status: null, statusAt: 0, mediaFiles: [], busy: false, seekOffset: 0, seekBase: 0, seekTimer: null };
+let phoneCast = null;
 
 const els = Object.fromEntries([
   'deviceList','deviceCount','emptyState','controller','selectedName','selectedMeta','mediaTitle','mediaSubtitle','playbackLabel','artwork','seekSlider','elapsedTime','durationTime','playPauseButton','stopButton','seekStack','backgroundButton','backgroundOffButton','backgroundHint','volumeSlider','volumeValue','muteButton','castForm','mediaUrl','mediaTitleInput','contentType','urlQueueButton','queueCount','queueList','queueError','queueNextButton','queueClearButton','mediaPlayAllButton','mediaRefreshButton','localMediaList','refreshButton','toast'
 ].map((id) => [id, document.getElementById(id)]));
+['phoneCastJoinButton', 'phoneCastLeaveButton', 'phoneCastHint'].forEach((id) => { els[id] = document.getElementById(id); });
 
 function selectedDevice() { return state.devices.find((device) => device.id === state.selectedId); }
 function escapeHtml(value) { const node = document.createElement('div'); node.textContent = String(value || ''); return node.innerHTML; }
@@ -90,7 +92,7 @@ function renderSelection() {
   const device = selectedDevice();
   els.emptyState.classList.toggle('hidden', Boolean(device));
   els.controller.classList.toggle('hidden', !device);
-  if (!device) { backgroundRemote.disable(); return; }
+  if (!device) { backgroundRemote.disable(); if (phoneCast) phoneCast.leave(); return; }
   els.selectedName.textContent = device.name;
   els.selectedMeta.textContent = `${device.model} · ${device.host}`;
   renderStatus();
@@ -127,6 +129,7 @@ function renderStatus() {
   }
   renderQueue(Array.isArray(status.queue) ? status.queue : []);
   backgroundRemote.update();
+  if (phoneCast) phoneCast.update();
 }
 
 async function loadDevices() {
@@ -140,7 +143,7 @@ async function loadMedia() {
 }
 
 async function selectDevice(id) {
-  if (id !== state.selectedId) backgroundRemote.disable();
+  if (id !== state.selectedId) { backgroundRemote.disable(); if (phoneCast) phoneCast.leave(); }
   resetSeekQueue();
   state.selectedId = id;
   localStorage.setItem('castdeck-selected', id);
@@ -156,7 +159,7 @@ async function loadStatus(silent = false) {
   const deviceId = state.selectedId;
   try {
     const status = await api(`/api/devices/${encodeURIComponent(deviceId)}/status`);
-    if (deviceId === state.selectedId) setStatus(status);
+    if (deviceId === state.selectedId) { setStatus(status); return status; }
   }
   catch (error) { if (!silent) showToast(error.message, true); }
 }
@@ -169,7 +172,7 @@ async function control(action, body = {}, deviceId = state.selectedId) {
     if (deviceId === state.selectedId && result && result.volume) setStatus(result);
     await loadStatus(true);
   } catch (error) { showToast(error.message, true); }
-  finally { state.busy = false; renderQueue(Array.isArray(state.status && state.status.queue) ? state.status.queue : []); }
+  finally { state.busy = false; renderQueue(Array.isArray(state.status && state.status.queue) ? state.status.queue : []); renderPhoneCast(); }
 }
 
 els.playPauseButton.addEventListener('click', () => control(state.status && state.status.playerState === 'PLAYING' ? 'pause' : 'play'));
@@ -249,6 +252,7 @@ async function castPayload(action, payload, button, successMessage) {
     button.disabled = false;
     button.innerHTML = originalLabel;
     renderQueue(Array.isArray(state.status && state.status.queue) ? state.status.queue : []);
+    renderPhoneCast();
   }
 }
 
@@ -273,13 +277,15 @@ const backgroundRemote = new CastDeckBackgroundRemote({
 
 function renderBackgroundControls() {
   const remote = backgroundRemote;
-  els.backgroundButton.disabled = !remote.supported || remote.pending;
+  const nativeConnected = phoneCast && (phoneCast.session || phoneCast.pending);
+  els.backgroundButton.disabled = !remote.supported || remote.pending || Boolean(nativeConnected);
   els.backgroundButton.setAttribute('aria-pressed', String(remote.enabled));
   els.backgroundOffButton.classList.toggle('hidden', !remote.enabled);
   els.backgroundButton.textContent = remote.pending ? 'Enabling…'
     : remote.suspended ? 'Resume background controls'
     : remote.enabled ? 'Background controls on — turn off' : 'Enable background controls';
-  els.backgroundHint.textContent = !remote.supported ? 'This browser does not support media notification controls. Try Chrome on Android.'
+  els.backgroundHint.textContent = nativeConnected ? 'Phone Cast connection handles native controls; the silent background mode is off.'
+    : !remote.supported ? 'This browser does not support media notification controls. Try Chrome on Android.'
     : remote.suspended ? 'Phone playback was suspended. Tap Resume to try again; Chromecast keeps playing.'
     : remote.enabled ? 'Check your notification or lock screen for controls. Android may still suspend this page. Volume keys control the phone.'
     : 'Experimental phone notification controls. Uses silent audio; may pause other phone audio. Volume keys still control the phone.';
@@ -292,6 +298,30 @@ els.backgroundButton.addEventListener('click', () => {
 els.backgroundOffButton.addEventListener('click', () => backgroundRemote.disable());
 window.addEventListener('pagehide', () => backgroundRemote.disable());
 renderBackgroundControls();
+
+phoneCast = new CastDeckPhoneCast({
+  getContext: () => ({ id: state.selectedId, status: state.status }),
+  refresh: () => loadStatus(true),
+  onChange: renderPhoneCast,
+  onError: (message) => showToast(message, true),
+});
+function renderPhoneCast() {
+  if (!phoneCast) return;
+  const reason = phoneCast.eligibility();
+  els.phoneCastJoinButton.disabled = Boolean(reason) || phoneCast.pending || Boolean(phoneCast.session) || state.busy;
+  els.phoneCastJoinButton.textContent = phoneCast.pending ? 'Joining…' : phoneCast.session ? 'Phone connected to Cast' : 'Join current cast';
+  els.phoneCastLeaveButton.classList.toggle('hidden', !phoneCast.session && !phoneCast.pending);
+  els.phoneCastHint.textContent = reason && !phoneCast.pending && !phoneCast.session ? reason
+    : phoneCast.message || 'Join the existing session to try Android volume-button control. Current playback stays in place.';
+  renderBackgroundControls();
+}
+els.phoneCastJoinButton.addEventListener('click', () => {
+  backgroundRemote.disable();
+  void phoneCast.join();
+});
+els.phoneCastLeaveButton.addEventListener('click', () => phoneCast.leave());
+window.addEventListener('pagehide', () => phoneCast.leave());
+renderPhoneCast();
 
 const events = new EventSource('/api/events');
 events.addEventListener('devices', (event) => { state.devices = JSON.parse(event.data); renderDevices(); renderSelection(); });

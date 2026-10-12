@@ -86,6 +86,11 @@
                 <button class="stop-button" id="stopButton" aria-label="Stop playback">■</button>
               </div>
               <div class="seek-stack" id="seekStack" aria-live="polite"></div>
+              <div class="phone-cast-controls">
+                <button id="phoneCastJoinButton" type="button">Join current cast</button>
+                <button id="phoneCastLeaveButton" type="button" class="hidden">Detach phone</button>
+                <p id="phoneCastHint" role="status">Open the HTTPS controller to connect your phone to the existing Cast session.</p>
+              </div>
               <div class="background-controls">
                 <button id="backgroundButton" type="button" aria-pressed="false" aria-describedby="backgroundHint">Enable background controls</button>
                 <button id="backgroundOffButton" type="button" class="hidden">Turn off</button>
@@ -150,6 +155,7 @@
     </main>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="/phone-cast.js" defer></script>
     <script src="/background-remote.js" defer></script>
     <script src="/app.js" defer></script>
   </body>

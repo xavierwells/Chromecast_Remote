@@ -9,6 +9,7 @@ import os
 import queue
 import signal
 import socket
+import ssl
 import sys
 import threading
 import time
@@ -411,6 +412,7 @@ def add_demo_devices() -> None:
 def default_demo_status(device_id: str) -> dict:
     active = device_id != "demo-bedroom"
     return {
+        "demo": True,
         "volume": {"level": 0.42, "muted": False},
         "playerState": "PLAYING" if active else "IDLE",
         "media": {"title": "Nightmare on Elm Street", "subtitle": "Movie night demo", "image": "",
@@ -448,6 +450,9 @@ def cast_status_payload(cast) -> dict:
                    "muted": bool(getattr(receiver, "volume_muted", False))},
         "playerState": getattr(media, "player_state", "IDLE") or "IDLE",
         "idleReason": getattr(media, "idle_reason", None),
+        "receiver": {"appId": getattr(receiver, "app_id", None),
+                     "sessionId": getattr(receiver, "session_id", None),
+                     "appName": getattr(receiver, "display_name", None) or "Google Cast"},
         "media": {
             "title": getattr(media, "title", None) or getattr(cast, "app_display_name", None) or "Now casting",
             "subtitle": getattr(media, "artist", None) or getattr(media, "series_title", None) or "",
@@ -520,10 +525,25 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/setup/castdeck-ca.crt":
+            ca = getattr(self.server, "ca_certificate", None)
+            if ca is None:
+                return self.send_json({"error": "No local certificate is configured."}, HTTPStatus.NOT_FOUND)
+            body = ca.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-x509-ca-cert")
+            self.send_header("Content-Disposition", 'attachment; filename="castdeck-ca.crt"')
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if parsed.path.startswith("/setup/"):
+            return self.send_json({"error": "Not found."}, HTTPStatus.NOT_FOUND)
         if parsed.path == "/api/devices":
             return self.send_json(device_list())
         if parsed.path == "/api/media":
-            return self.send_json(media_list(self.server.server_port))
+            return self.send_json(media_list(getattr(self.server, "media_port", self.server.server_port)))
         if parsed.path == "/api/events":
             return self.event_stream()
         if parsed.path.startswith("/media/"):
@@ -846,19 +866,58 @@ def main() -> None:
     parser.add_argument("--demo", action="store_true", help="use simulated devices")
     parser.add_argument("--host", default=os.environ.get("HOST", "0.0.0.0"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "4173")))
+    parser.add_argument("--https-port", type=int, help="additional HTTPS controller port (e.g. 4175)")
+    parser.add_argument("--cert-dir", type=Path, help="per-PC directory for a generated local authority and TLS certificate")
+    parser.add_argument("--tls-cert", type=Path, help="use an existing PEM certificate chain instead of a local certificate")
+    parser.add_argument("--tls-key", type=Path, help="private key matching --tls-cert")
     args = parser.parse_args()
     DEMO_MODE = args.demo or os.environ.get("CASTDECK_DEMO") == "1"
+    server = CastDeckServer((args.host, args.port), Handler)
+    https_server = None
+    certificates = None
+    try:
+        if args.https_port:
+            if args.https_port == args.port:
+                raise ValueError("HTTP media and HTTPS controller ports must be different.")
+            if bool(args.tls_cert) != bool(args.tls_key):
+                raise ValueError("Provide both --tls-cert and --tls-key.")
+            if args.tls_cert:
+                cert_path, key_path = args.tls_cert, args.tls_key
+            else:
+                from https_support import ensure_certificates
+                cert_dir = args.cert_dir or Path(os.environ.get("LOCALAPPDATA", str(APP_DIR))) / "CastDeck" / "certificates"
+                certificates = ensure_certificates(cert_dir, lan_address())
+                cert_path, key_path = certificates["cert"], certificates["key"]
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+            context.load_cert_chain(cert_path, key_path)
+            https_server = CastDeckServer((args.host, args.https_port), Handler)
+            https_server.socket = context.wrap_socket(https_server.socket, server_side=True)
+            https_server.media_port = args.port
+            server.ca_certificate = certificates["ca"] if certificates else None
+            https_server.ca_certificate = server.ca_certificate
+    except Exception:
+        if https_server is not None:
+            https_server.server_close()
+        server.server_close()
+        raise
     if DEMO_MODE:
         add_demo_devices()
     else:
         BROWSER = pychromecast.get_chromecasts(blocking=False, callback=add_cast)
-    server = CastDeckServer((args.host, args.port), Handler)
+    if https_server is not None:
+        threading.Thread(target=https_server.serve_forever, kwargs={"poll_interval": 0.5}, daemon=True).start()
     queue_monitor_stop = threading.Event()
     if not DEMO_MODE:
         threading.Thread(target=monitor_queues, args=(queue_monitor_stop,), daemon=True).start()
     mode = " (demo mode)" if DEMO_MODE else ""
     print(f"CastDeck is ready{mode}", flush=True)
     print(f"  This computer: http://127.0.0.1:{args.port}", flush=True)
+    if https_server is not None:
+        print(f"  HTTPS controller: https://{lan_address()}:{args.https_port}", flush=True)
+        if certificates:
+            print(f"  Android CA download: http://{lan_address()}:{args.port}/setup/castdeck-ca.crt", flush=True)
+            print(f"  CA SHA-256: {certificates['fingerprint']}", flush=True)
     advertisement = None
     if args.host == "0.0.0.0":
         print(f"  Phone on Wi-Fi: http://{lan_address()}:{args.port}", flush=True)
@@ -870,6 +929,8 @@ def main() -> None:
 
     def shutdown(_signum, _frame):
         threading.Thread(target=server.shutdown, daemon=True).start()
+        if https_server is not None:
+            threading.Thread(target=https_server.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
@@ -877,6 +938,9 @@ def main() -> None:
         server.serve_forever(poll_interval=0.5)
     finally:
         queue_monitor_stop.set()
+        if https_server is not None:
+            https_server.shutdown()
+            https_server.server_close()
         if advertisement is not None:
             zeroconf, service = advertisement
             try:

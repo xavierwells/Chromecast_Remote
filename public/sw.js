@@ -1,5 +1,5 @@
-const CACHE = 'castdeck-shell-v4';
-const SHELL = ['/', '/styles.css', '/background-remote.js', '/app.js', '/manifest.webmanifest', '/icon.svg', '/icon-192.png', '/icon-512.png'];
+const CACHE = 'castdeck-shell-v5';
+const SHELL = ['/', '/styles.css', '/phone-cast.js', '/background-remote.js', '/app.js', '/manifest.webmanifest', '/icon.svg', '/icon-192.png', '/icon-512.png'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)));
@@ -14,7 +14,7 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== 'GET' || url.origin !== self.location.origin) return;
-  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/media/')) return;
+  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/media/') || url.pathname.startsWith('/setup/')) return;
   event.respondWith(fetch(event.request).then((response) => {
     if (response.ok) {
       const copy = response.clone();

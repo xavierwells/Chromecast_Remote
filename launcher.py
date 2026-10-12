@@ -12,6 +12,7 @@ import threading
 import time
 import webbrowser
 from pathlib import Path
+from urllib.request import urlopen
 
 
 def application_dir() -> Path:
@@ -40,11 +41,14 @@ from tkinter import filedialog, messagebox, ttk
 APP_DATA = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "CastDeck"
 CONFIG_PATH = APP_DATA / "config.json"
 LOG_PATH = APP_DATA / "server.log"
+CERTIFICATES_DIR = APP_DATA / "certificates"
 DEFAULTS = {
     "media_dirs": [str(application_dir() / "media")],
     "port": 4173,
     "lan_access": True,
     "auto_start": False,
+    "https_enabled": True,
+    "https_port": 4175,
 }
 
 
@@ -87,14 +91,16 @@ class SettingsDialog:
         self.owner = owner
         self.window = tk.Toplevel(owner.root)
         self.window.title("CastDeck Settings")
-        self.window.geometry("610x455")
-        self.window.minsize(570, 420)
+        self.window.geometry("610x505")
+        self.window.minsize(570, 470)
         self.window.transient(owner.root)
         self.window.grab_set()
 
         self.port = tk.StringVar(value=str(owner.config["port"]))
         self.lan_access = tk.BooleanVar(value=bool(owner.config["lan_access"]))
         self.auto_start = tk.BooleanVar(value=bool(owner.config["auto_start"]))
+        self.https_enabled = tk.BooleanVar(value=bool(owner.config["https_enabled"]))
+        self.https_port = tk.StringVar(value=str(owner.config["https_port"]))
 
         shell = ttk.Frame(self.window, padding=18)
         shell.pack(fill="both", expand=True)
@@ -122,6 +128,9 @@ class SettingsDialog:
         ttk.Entry(network, textvariable=self.port, width=9).grid(row=0, column=1, sticky="w", padx=(6, 18))
         ttk.Checkbutton(network, text="Allow phones and tablets on this LAN", variable=self.lan_access).grid(row=0, column=2, sticky="w")
         ttk.Checkbutton(network, text="Start server when CastDeck opens", variable=self.auto_start).grid(row=1, column=0, columnspan=3, sticky="w", pady=(9, 0))
+        ttk.Checkbutton(network, text="HTTPS controller (trust certificate once on each phone)", variable=self.https_enabled).grid(row=2, column=0, columnspan=3, sticky="w", pady=(9, 0))
+        ttk.Label(network, text="HTTPS port:").grid(row=3, column=0, sticky="w", pady=(6, 0))
+        ttk.Entry(network, textvariable=self.https_port, width=9).grid(row=3, column=1, sticky="w", padx=6, pady=(6, 0))
 
         actions = ttk.Frame(shell)
         actions.pack(fill="x", pady=(16, 0))
@@ -150,11 +159,20 @@ class SettingsDialog:
         if not 1024 <= port <= 65535:
             messagebox.showerror("Invalid port", "Use a port from 1024 to 65535.", parent=self.window)
             return
+        try:
+            https_port = int(self.https_port.get())
+        except ValueError:
+            https_port = 0
+        if self.https_enabled.get() and (not 1024 <= https_port <= 65535 or https_port == port):
+            messagebox.showerror("Invalid HTTPS port", "Use a different port from 1024 to 65535 for HTTPS.", parent=self.window)
+            return
         config = {
             "media_dirs": [str(Path(item).expanduser().resolve()) for item in directories],
             "port": port,
             "lan_access": self.lan_access.get(),
             "auto_start": self.auto_start.get(),
+            "https_enabled": self.https_enabled.get(),
+            "https_port": https_port or 4175,
         }
         try:
             save_config(config)
@@ -172,7 +190,7 @@ class CastDeckLauncher:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("CastDeck")
-        self.root.geometry("480x315")
+        self.root.geometry("530x355")
         self.root.resizable(False, False)
         self.root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         self.config = load_config()
@@ -224,9 +242,12 @@ class CastDeckLauncher:
         self.qr_button = ttk.Button(secondary, text="Phone QR…", command=self.show_qr, state="disabled")
         self.qr_button.pack(side="left", padx=7)
         ttk.Button(secondary, text="Open Log", command=self.open_log).pack(side="right")
+        ttk.Button(shell, text="HTTPS / Android Setup…", command=self.show_https_setup).pack(anchor="w", pady=(9, 0))
 
         ttk.Separator(shell).pack(fill="x", pady=(15, 9))
         ttk.Label(shell, text="Closing this window keeps CastDeck running in the notification area.", foreground="#666666").pack(anchor="w")
+        self.root.update_idletasks()
+        self.root.geometry(f"530x{max(355, self.root.winfo_reqheight())}")
 
     def create_tray_icon(self) -> None:
         menu = pystray.Menu(
@@ -270,6 +291,12 @@ class CastDeckLauncher:
             port = int(config["port"])
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
                 probe.bind(("127.0.0.1", port))
+            if config["https_enabled"]:
+                https_port = int(config["https_port"])
+                if not 1024 <= https_port <= 65535 or https_port == port:
+                    raise ValueError("Choose a valid HTTPS port different from the media port.")
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                    probe.bind(("127.0.0.1", https_port))
         except (OSError, ValueError) as error:
             messagebox.showerror("CastDeck could not start", str(error), parent=self.root)
             return
@@ -280,6 +307,8 @@ class CastDeckLauncher:
             command = [sys.executable, "--server", "--host", host, "--port", str(port)]
         else:
             command = [sys.executable, str(Path(__file__).resolve()), "--server", "--host", host, "--port", str(port)]
+        if config["https_enabled"]:
+            command.extend(["--https-port", str(config["https_port"]), "--cert-dir", str(CERTIFICATES_DIR)])
         environment = os.environ.copy()
         environment["CASTDECK_MEDIA_DIRS"] = json.dumps([str(item) for item in directories])
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
@@ -304,7 +333,7 @@ class CastDeckLauncher:
                 self.enqueue(self.server_failed_if_current, process, "The server exited before it was ready. Check the log for details.")
                 return
             try:
-                with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                with urlopen(f"http://127.0.0.1:{port}/api/devices", timeout=0.5):
                     self.enqueue(self.server_ready, process)
                     process.wait()
                     self.enqueue(self.process_ended, process)
@@ -366,12 +395,13 @@ class CastDeckLauncher:
             self.log_file = None
 
     def refresh_addresses(self) -> None:
-        port = int(self.config["port"])
+        scheme = "https" if self.config["https_enabled"] else "http"
+        port = int(self.config["https_port"] if self.config["https_enabled"] else self.config["port"])
         if self.config["lan_access"]:
-            self.phone_address.set(f"Phone: http://castdeck.local:{port}")
-            self.fallback_address.set(f"Fallback: http://{self.lan_address()}:{port}")
+            self.phone_address.set(f"Phone: {scheme}://castdeck.local:{port}")
+            self.fallback_address.set(f"Fallback: {scheme}://{self.lan_address()}:{port}")
         else:
-            self.phone_address.set(f"This PC only: http://127.0.0.1:{port}")
+            self.phone_address.set(f"This PC only: {scheme}://127.0.0.1:{port}")
             self.fallback_address.set("")
 
     def update_tray_menu(self) -> None:
@@ -403,7 +433,39 @@ class CastDeckLauncher:
         SettingsDialog(self)
 
     def open_controller(self) -> None:
-        webbrowser.open(f"http://127.0.0.1:{int(self.config['port'])}")
+        scheme = "https" if self.config["https_enabled"] else "http"
+        port = int(self.config["https_port"] if self.config["https_enabled"] else self.config["port"])
+        webbrowser.open(f"{scheme}://127.0.0.1:{port}")
+
+    def show_https_setup(self) -> None:
+        window = tk.Toplevel(self.root)
+        window.title("CastDeck HTTPS / Android Setup")
+        window.resizable(False, False)
+        shell = ttk.Frame(window, padding=20)
+        shell.pack(fill="both", expand=True)
+        ttk.Label(shell, text="Trust this PC once on your phone", font=("Segoe UI", 13, "bold")).pack(anchor="w")
+        instructions = ("1. Enable HTTPS in Settings and start the server.\n"
+                        "2. Scan the QR to download castdeck-ca.crt.\n"
+                        "3. On Android, install it as a CA certificate in security settings.\n"
+                        "4. Open the HTTPS phone link, then tap Join current cast.\n\n"
+                        "Only trust the certificate from your own PC. Compare its SHA-256\n"
+                        "fingerprint below before installing. Android menu names vary.")
+        ttk.Label(shell, text=instructions, justify="left").pack(anchor="w", pady=12)
+        url = f"http://{self.lan_address()}:{int(self.config['port'])}/setup/castdeck-ca.crt"
+        photo = ImageTk.PhotoImage(qrcode.make(url).convert("RGB").resize((220, 220)))
+        label = ttk.Label(shell, image=photo)
+        label.image = photo
+        label.pack()
+        ttk.Label(shell, text=url).pack(pady=8)
+        ca = CERTIFICATES_DIR / "castdeck-ca.crt"
+        if ca.exists():
+            from https_support import certificate_fingerprint
+            fingerprint = certificate_fingerprint(ca)
+            ttk.Label(shell, text=f"CA SHA-256:\n{fingerprint[:48]}\n{fingerprint[48:]}", font=("Consolas", 9), justify="left").pack(anchor="w", pady=6)
+            ttk.Button(shell, text="Open certificate folder (Windows trust setup)", command=lambda: os.startfile(CERTIFICATES_DIR)).pack(anchor="w", pady=6)
+        else:
+            ttk.Label(shell, text="Start the HTTPS server first to generate this PC's certificate.").pack(pady=6)
+        ttk.Label(shell, text="Each PC gets its own certificate. Private keys stay on the PC.").pack(anchor="w", pady=8)
 
     def show_qr(self) -> None:
         if not self.is_running():
@@ -426,9 +488,11 @@ class CastDeckLauncher:
         os.startfile(LOG_PATH)
 
     def reliable_phone_url(self) -> str:
+        scheme = "https" if self.config["https_enabled"] else "http"
+        port = int(self.config["https_port"] if self.config["https_enabled"] else self.config["port"])
         if not self.config["lan_access"]:
-            return f"http://127.0.0.1:{int(self.config['port'])}"
-        return f"http://{self.lan_address()}:{int(self.config['port'])}"
+            return f"{scheme}://127.0.0.1:{port}"
+        return f"{scheme}://{self.lan_address()}:{port}"
 
     @staticmethod
     def lan_address() -> str:
