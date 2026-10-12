@@ -12,6 +12,8 @@ echo Installing build tools...
 if errorlevel 1 goto :failed
 
 echo Building CastDeck.exe...
+".venv\Scripts\python.exe" tools\generate-icons.py
+if errorlevel 1 goto :failed
 ".venv\Scripts\python.exe" -m PyInstaller --noconfirm --clean --onefile --windowed --name CastDeck --add-data "public;public" launcher.py
 if errorlevel 1 goto :failed
 

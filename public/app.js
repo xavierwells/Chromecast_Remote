@@ -46,7 +46,7 @@ function renderMedia() {
     const kind = item.fileName.includes('.') ? item.fileName.split('.').pop() : 'media';
     return `<div class="media-item">
       <span class="media-kind">${escapeHtml(kind)}</span>
-      <span class="media-copy"><strong>${escapeHtml(item.name)}</strong><span>${escapeHtml(item.fileName)} · ${formatBytes(item.size)}</span></span>
+      <span class="media-copy"><strong>${escapeHtml(item.name)}</strong><span>${escapeHtml(item.sourceName || 'Media')} · ${escapeHtml(item.fileName)} · ${formatBytes(item.size)}</span></span>
       <button class="media-cast" type="button" data-media-index="${index}">CAST ›</button>
     </div>`;
   }).join('');
@@ -225,3 +225,7 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden) { loadDevices(); loadMedia(); loadStatus(true); }
 });
 window.addEventListener('pageshow', () => { loadDevices(); loadMedia(); loadStatus(true); });
+
+if ('serviceWorker' in navigator && window.isSecureContext) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}

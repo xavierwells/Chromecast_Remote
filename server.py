@@ -18,17 +18,40 @@ from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
 
 import pychromecast
+from zeroconf import IPVersion, ServiceInfo, Zeroconf
 
 SOURCE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
 PUBLIC = SOURCE_DIR / "public"
-MEDIA_DIR = Path(os.environ.get("CASTDECK_MEDIA_DIR", APP_DIR / "media")).expanduser().resolve()
+
+
+def media_directories_from_environment() -> tuple[Path, ...]:
+    raw = os.environ.get("CASTDECK_MEDIA_DIRS", "").strip()
+    configured: list[str] = []
+    if raw:
+        try:
+            value = json.loads(raw)
+            configured = [str(item) for item in value] if isinstance(value, list) else []
+        except (ValueError, TypeError):
+            configured = []
+    if not configured:
+        configured = [os.environ.get("CASTDECK_MEDIA_DIR", str(APP_DIR / "media"))]
+    unique: list[Path] = []
+    for item in configured:
+        path = Path(item).expanduser().resolve()
+        if path not in unique:
+            unique.append(path)
+    return tuple(unique or [(APP_DIR / "media").resolve()])
+
+
+MEDIA_DIRS = media_directories_from_environment()
 MEDIA_TYPES = {
     ".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm",
     ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".aac": "audio/aac",
     ".wav": "audio/wav", ".flac": "audio/flac", ".ogg": "audio/ogg",
     ".opus": "audio/ogg", ".m3u8": "application/vnd.apple.mpegurl",
 }
+mimetypes.add_type("application/manifest+json", ".webmanifest")
 DEVICES: dict[str, "CastDevice"] = {}
 DEMO_STATUS: dict[str, dict] = {}
 STREAMS: set[queue.Queue] = set()
@@ -87,21 +110,27 @@ def device_list() -> list[dict]:
 
 
 def media_list(port: int) -> list[dict]:
-    """List playable files in the dedicated media directory."""
-    MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+    """List playable files across every configured media directory."""
     items = []
-    for media_path in sorted(MEDIA_DIR.rglob("*"), key=lambda item: item.name.lower()):
-        if not media_path.is_file() or media_path.suffix.lower() not in MEDIA_TYPES:
+    for directory_index, media_directory in enumerate(MEDIA_DIRS):
+        if not media_directory.is_dir():
             continue
-        relative = media_path.relative_to(MEDIA_DIR).as_posix()
-        items.append({
-            "name": media_path.stem,
-            "fileName": media_path.name,
-            "relativePath": relative,
-            "size": media_path.stat().st_size,
-            "contentType": MEDIA_TYPES[media_path.suffix.lower()],
-            "castUrl": f"http://{lan_address()}:{port}/media/{quote(relative, safe='/')}",
-        })
+        source_name = media_directory.name or str(media_directory)
+        for media_path in sorted(media_directory.rglob("*"), key=lambda item: item.name.lower()):
+            if not media_path.is_file() or media_path.suffix.lower() not in MEDIA_TYPES:
+                continue
+            relative = media_path.relative_to(media_directory).as_posix()
+            items.append({
+                "name": media_path.stem,
+                "fileName": media_path.name,
+                "relativePath": relative,
+                "sourceName": source_name,
+                "size": media_path.stat().st_size,
+                "contentType": MEDIA_TYPES[media_path.suffix.lower()],
+                "castUrl": f"http://{lan_address()}:{port}/media/{directory_index}/{quote(relative, safe='/')}",
+            })
+            if len(items) >= 1000:
+                return items
     return items[:1000]
 
 
@@ -378,8 +407,18 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def serve_media(self, request_path: str, head_only: bool = False) -> None:
-        target = (MEDIA_DIR / unquote(request_path)).resolve()
-        if MEDIA_DIR not in target.parents or not target.is_file():
+        decoded = unquote(request_path)
+        directory_index = 0
+        relative = decoded
+        first, separator, remainder = decoded.partition("/")
+        if separator and first.isdigit():
+            directory_index = int(first)
+            relative = remainder
+        if directory_index < 0 or directory_index >= len(MEDIA_DIRS):
+            return self.send_error(HTTPStatus.NOT_FOUND)
+        media_directory = MEDIA_DIRS[directory_index]
+        target = (media_directory / relative).resolve()
+        if (media_directory not in target.parents and target != media_directory) or not target.is_file():
             return self.send_error(HTTPStatus.NOT_FOUND)
 
         size = target.stat().st_size
@@ -453,6 +492,31 @@ def lan_address() -> str:
         probe.close()
 
 
+def advertise_server(port: int) -> tuple[Zeroconf, ServiceInfo] | None:
+    """Advertise a friendly castdeck.local address on the LAN with mDNS."""
+    address = lan_address()
+    if address.startswith("127."):
+        return None
+    zeroconf = None
+    try:
+        zeroconf = Zeroconf(ip_version=IPVersion.V4Only)
+        service = ServiceInfo(
+            "_http._tcp.local.",
+            "CastDeck._http._tcp.local.",
+            addresses=[socket.inet_aton(address)],
+            port=port,
+            properties={b"path": b"/", b"app": b"CastDeck"},
+            server="castdeck.local.",
+        )
+        zeroconf.register_service(service, allow_name_change=True)
+        return zeroconf, service
+    except Exception as error:
+        print(f"  Friendly LAN name unavailable: {friendly_error(error)}", flush=True)
+        if zeroconf is not None:
+            zeroconf.close()
+        return None
+
+
 def main() -> None:
     global BROWSER, DEMO_MODE
     parser = argparse.ArgumentParser(description="Private local Chromecast controller")
@@ -469,8 +533,12 @@ def main() -> None:
     mode = " (demo mode)" if DEMO_MODE else ""
     print(f"CastDeck is ready{mode}", flush=True)
     print(f"  This computer: http://127.0.0.1:{args.port}", flush=True)
+    advertisement = None
     if args.host == "0.0.0.0":
         print(f"  Phone on Wi-Fi: http://{lan_address()}:{args.port}", flush=True)
+        advertisement = advertise_server(args.port)
+        if advertisement is not None:
+            print(f"  Easy LAN name:  http://castdeck.local:{args.port}", flush=True)
     else:
         print(f"  Listening at:  http://{args.host}:{args.port}", flush=True)
 
@@ -482,6 +550,12 @@ def main() -> None:
     try:
         server.serve_forever(poll_interval=0.5)
     finally:
+        if advertisement is not None:
+            zeroconf, service = advertisement
+            try:
+                zeroconf.unregister_service(service)
+            finally:
+                zeroconf.close()
         if BROWSER is not None:
             BROWSER.stop_discovery()
         with LOCK:

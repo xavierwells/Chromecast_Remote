@@ -5,7 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#090b0f" />
     <meta name="description" content="Private local-network Chromecast control." />
+    <meta name="application-name" content="CastDeck" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="CastDeck" />
     <title>CastDeck — local Chromecast control</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
@@ -111,7 +119,7 @@
 
           <section class="panel library-panel">
             <div class="panel-title library-heading">
-              <div><span>LOCAL MEDIA</span><small>Server media library</small></div>
+              <div><span>LOCAL MEDIA</span><small>Combined server libraries</small></div>
               <button id="mediaRefreshButton" class="library-refresh" type="button">REFRESH ↻</button>
             </div>
             <div id="localMediaList" class="media-list" aria-live="polite"></div>

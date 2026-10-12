@@ -14,7 +14,10 @@ Discover receivers, see what is playing, control playback and volume, stack quic
 - Stackable `−60`, `−15`, `−10`, `−5`, `+5`, `+10`, `+15`, and `+60` second skips
 - Direct casting for compatible HTTP(S) media URLs
 - Local file serving with byte-range support for seeking
+- Multiple media libraries without moving or junctioning files
 - Phone-ready interface available to devices on the same Wi-Fi
+- Windows notification-area controls and a phone QR code
+- PWA manifest, home-screen icon, and secure-context service worker
 - Server-sent status updates, a live in-browser timer, and recovery polling
 - Self-contained demo mode that never contacts a real Chromecast
 
@@ -29,17 +32,29 @@ CastDeck runs on the computer and opens its controller to the local network. A p
 The easiest option is the portable executable at `dist\CastDeck.exe`. It contains Python, PyChromecast, and the complete web interface, so the other PC does not need Python or a source checkout.
 
 1. Copy `CastDeck.exe` to the other Windows PC.
-2. Double-click it to open the **CastDeck Server** configurator.
-3. Choose the folder containing local media.
+2. Double-click it to open the small **CastDeck Server** window.
+3. Open **Settings** and add one or more folders containing local media.
 4. Leave port `4173` unless it conflicts with another program.
 5. Keep **Allow phones and tablets on this LAN** enabled.
 6. Select **Start CastDeck**.
 7. If Windows Firewall asks, allow it on **private networks** only.
 8. Open the phone URL displayed in the server window from a device on the same Wi-Fi.
 
-The configurator also controls whether the browser opens automatically and whether the server starts as soon as CastDeck launches. Settings are stored per PC in `%LOCALAPPDATA%\CastDeck\config.json`; media files remain in the folder you selected.
+Settings also control whether the browser opens automatically and whether the server starts as soon as CastDeck launches. Settings are stored per PC in `%LOCALAPPDATA%\CastDeck\config.json`; media files remain in their original folders.
 
-Keep the CastDeck Server window open while using the controller. Closing it stops the server. An already-buffered remote stream may continue, but local media served by that PC can stop loading.
+Closing the window minimizes CastDeck to the Windows notification area. Right-click its icon to open CastDeck, start or stop the server, open settings, or exit. **Stop** and **Exit** can interrupt local media served by that PC.
+
+## Easy phone access
+
+While LAN access is enabled, CastDeck advertises `http://castdeck.local:4173` using mDNS and also shows the numeric-IP fallback. Some routers block `.local` discovery, so the server window includes a **Phone QR** button that always uses the numeric LAN address.
+
+After opening CastDeck once, use the phone browser's **Add to Home Screen** command. CastDeck includes a PWA manifest, standalone display metadata, an app icon, and a service worker. Browsers generally require HTTPS for full service-worker installation; over ordinary LAN HTTP, some phones create a home-screen web shortcut instead. Either option removes the need to remember the address after the first visit.
+
+### About No-IP DUC
+
+No-IP DUC points a hostname to the PC's **public** IP. It does not automatically create a local-only shortcut. Reaching CastDeck through that hostname normally requires router loopback and port-forwarding, which would expose an unauthenticated Chromecast controller to the internet. Do not port-forward CastDeck.
+
+If the router supports a local DNS or host override, mapping a private hostname directly to the CastDeck PC's LAN IP is safe. Otherwise, use `castdeck.local`, the QR code, or a DHCP reservation plus a home-screen shortcut.
 
 ## Quick start on Windows
 
@@ -83,7 +98,7 @@ Open `http://127.0.0.1:4174`. Demo mode does not discover, connect to, or contro
 
 ## Cast downloaded files
 
-1. Copy supported files into the repository's `media` folder. Subfolders are supported.
+1. In the Windows server window, open **Settings** and add every folder you want CastDeck to scan. Subfolders are supported.
 2. Start CastDeck and select a receiver.
 3. Under **Local media**, choose **Cast**. Use **Refresh** after adding a file.
 
@@ -96,7 +111,7 @@ Recognized file types include:
 
 A recognized container can still contain a codec that a particular Chromecast cannot decode. MP4 with H.264 video and AAC audio is the most broadly compatible choice.
 
-Files downloaded on a phone are not uploaded automatically. Move them into the computer's `media` folder first; CastDeck then streams them from the computer to the receiver.
+Files downloaded on a phone are not uploaded automatically. Place them in any configured library folder; CastDeck then streams them from the computer to the receiver.
 
 ## Cast a media URL
 
@@ -155,10 +170,15 @@ The browser is only the interface. The local Python server handles discovery and
 castdeck/
 ├── public/
 │   ├── app.js          # Browser controls and live status handling
+│   ├── icon-192.png / icon-512.png
+│   ├── icon.svg        # PWA and browser icon
 │   ├── index.html      # Responsive controller interface
+│   ├── manifest.webmanifest
+│   ├── sw.js           # Secure-context application shell cache
 │   └── styles.css      # CastDeck visual design
 ├── docs/screenshots/   # README demo images
 ├── media/              # Local files available to cast
+├── tools/generate-icons.py
 ├── launcher.py         # Native server configurator and EXE entry point
 ├── server.py           # HTTP server, Cast bridge, SSE, and media serving
 ├── requirements.txt    # Python dependency lock
