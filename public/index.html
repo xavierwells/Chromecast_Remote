@@ -111,16 +111,31 @@
                     <option value="audio/mpeg">MP3 audio</option>
                     <option value="audio/aac">AAC audio</option>
                   </select>
-                  <button type="submit" class="cast-button">CAST <span>›</span></button>
+                  <button type="submit" class="cast-button">PLAY NOW <span>›</span></button>
+                  <button id="urlQueueButton" type="button" class="queue-button">+ QUEUE</button>
                 </div>
               </form>
             </section>
           </div>
 
+          <section class="panel queue-panel">
+            <div class="panel-title queue-heading">
+              <div><span>UP NEXT</span><strong id="queueCount">0 items</strong></div>
+              <div class="queue-controls">
+                <button id="queueNextButton" type="button" disabled>NEXT ›</button>
+                <button id="queueClearButton" type="button" disabled>CLEAR</button>
+              </div>
+            </div>
+            <div id="queueList" class="queue-list" aria-live="polite"></div>
+          </section>
+
           <section class="panel library-panel">
             <div class="panel-title library-heading">
               <div><span>LOCAL MEDIA</span><small>Combined server libraries</small></div>
-              <button id="mediaRefreshButton" class="library-refresh" type="button">REFRESH ↻</button>
+              <div class="library-actions">
+                <button id="mediaPlayAllButton" class="library-refresh" type="button">PLAY ALL ›</button>
+                <button id="mediaRefreshButton" class="library-refresh" type="button">REFRESH ↻</button>
+              </div>
             </div>
             <div id="localMediaList" class="media-list" aria-live="polite"></div>
           </section>

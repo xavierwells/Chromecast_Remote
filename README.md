@@ -2,7 +2,7 @@
 
 **A private, phone-friendly remote for Chromecast and Google Cast devices on your local network.**
 
-Discover receivers, see what is playing, control playback and volume, stack quick-seek commands, cast direct media URLs, and serve downloaded media from the host computer—without a cloud account.
+Discover receivers, see what is playing, control playback and volume, build a shared playback queue, stack quick-seek commands, cast direct media URLs, and serve downloaded media from the host computer—without a cloud account.
 
 ![CastDeck desktop controller](docs/screenshots/castdeck-desktop.png)
 
@@ -11,6 +11,7 @@ Discover receivers, see what is playing, control playback and volume, stack quic
 - Automatic Chromecast and Google Cast discovery
 - Live title, artwork, playback position, player state, and receiver volume
 - Play, pause, stop, mute, seek, and volume controls
+- A server-held **Up Next** queue with play-from-here, add, remove, skip, and clear controls
 - Stackable `−60`, `−15`, `−10`, `−5`, `+5`, `+10`, `+15`, and `+60` second skips
 - Direct casting for compatible HTTP(S) media URLs
 - Local file serving with byte-range support for seeking
@@ -36,11 +37,11 @@ The easiest option is the portable executable at `dist\CastDeck.exe`. It contain
 3. Open **Settings** and add one or more folders containing local media.
 4. Leave port `4173` unless it conflicts with another program.
 5. Keep **Allow phones and tablets on this LAN** enabled.
-6. Select **Start CastDeck**.
+6. Select **Start**.
 7. If Windows Firewall asks, allow it on **private networks** only.
-8. Open the phone URL displayed in the server window from a device on the same Wi-Fi.
+8. Use **Open Controller** on the PC, or open the displayed phone URL from a device on the same Wi-Fi.
 
-Settings also control whether the browser opens automatically and whether the server starts as soon as CastDeck launches. Settings are stored per PC in `%LOCALAPPDATA%\CastDeck\config.json`; media files remain in their original folders.
+Starting the server does not open a browser automatically. Use **Open Controller** whenever you want the local web interface. Settings can start the server as soon as CastDeck launches and are stored per PC in `%LOCALAPPDATA%\CastDeck\config.json`; media files remain in their original folders.
 
 Closing the window minimizes CastDeck to the Windows notification area. Right-click its icon to open CastDeck, start or stop the server, open settings, or exit. **Stop** and **Exit** can interrupt local media served by that PC.
 
@@ -67,7 +68,7 @@ This source-based method is useful for development. For another PC, the single-f
 3. Leave the CastDeck terminal open.
 4. On a phone connected to the same Wi-Fi, open the **Phone on Wi-Fi** URL shown in the terminal.
 
-On first launch, the script creates `.venv`, installs the dependency, starts the server on port `4173`, and opens the local controller.
+On first launch, the script creates `.venv`, installs the dependency, and starts the server on port `4173`. Open the printed local address in a browser.
 
 If Windows Firewall asks, allow Python on **private networks**. Your computer, phone, and Cast devices must be on the same LAN.
 
@@ -100,7 +101,9 @@ Open `http://127.0.0.1:4174`. Demo mode does not discover, connect to, or contro
 
 1. In the Windows server window, open **Settings** and add every folder you want CastDeck to scan. Subfolders are supported.
 2. Start CastDeck and select a receiver.
-3. Under **Local media**, choose **Cast**. Use **Refresh** after adding a file.
+3. Under **Local media**, choose **Play from here** to play that item and queue the files after it, or **+ Queue** to append one item. **Play All** starts at the top of the combined library. Use **Refresh** after adding a file.
+
+The **Up Next** panel is shared by every open controller. It supports removing individual items, jumping to the next item, and clearing the queue. When the current item finishes naturally, CastDeck starts the next item automatically. Pressing **Stop** also clears Up Next.
 
 The computer serves the file directly across the LAN to the Chromecast. It must remain powered on, connected, and running CastDeck for the duration of playback. Do not rename or move a file while it is playing.
 
@@ -178,6 +181,7 @@ castdeck/
 │   └── styles.css      # CastDeck visual design
 ├── docs/screenshots/   # README demo images
 ├── media/              # Local files available to cast
+├── tests/test_queue.py # Queue progression and duplicate-finish coverage
 ├── tools/generate-icons.py
 ├── launcher.py         # Native server configurator and EXE entry point
 ├── server.py           # HTTP server, Cast bridge, SSE, and media serving

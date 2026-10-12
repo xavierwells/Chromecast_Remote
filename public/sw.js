@@ -1,4 +1,4 @@
-const CACHE = 'castdeck-shell-v1';
+const CACHE = 'castdeck-shell-v2';
 const SHELL = ['/', '/styles.css', '/app.js', '/manifest.webmanifest', '/icon.svg', '/icon-192.png', '/icon-512.png'];
 
 self.addEventListener('install', (event) => {

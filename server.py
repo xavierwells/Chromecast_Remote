@@ -11,6 +11,7 @@ import signal
 import socket
 import sys
 import threading
+import uuid
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -71,6 +72,10 @@ class CastDevice:
     cast_info: object | None = None
     connection_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
     status_listener: object | None = field(default=None, repr=False)
+    media_queue: list[dict] = field(default_factory=list, repr=False)
+    queue_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
+    queue_advancing: bool = field(default=False, repr=False)
+    last_finished_marker: tuple | None = field(default=None, repr=False)
 
     def public(self) -> dict:
         return {"id": self.id, "name": self.name, "model": self.model,
@@ -86,13 +91,21 @@ class DeviceStatusListener:
     def publish(self) -> None:
         cast = self.device.cast
         if cast is not None:
-            broadcast("status", {"id": self.device.id, "status": cast_status_payload(cast)})
+            status = status_with_queue(self.device, cast_status_payload(cast))
+            broadcast("status", {"id": self.device.id, "status": status})
 
     def new_cast_status(self, _status) -> None:
         self.publish()
 
-    def new_media_status(self, _status) -> None:
+    def new_media_status(self, status) -> None:
         self.publish()
+        if getattr(status, "player_state", "") == "IDLE" and getattr(status, "idle_reason", "") == "FINISHED":
+            marker = (getattr(status, "media_session_id", None), getattr(status, "content_id", None))
+            with self.device.queue_lock:
+                if marker == self.device.last_finished_marker:
+                    return
+                self.device.last_finished_marker = marker
+            schedule_queue_advance(self.device)
 
 
 def attach_status_listener(device: CastDevice) -> None:
@@ -107,6 +120,93 @@ def attach_status_listener(device: CastDevice) -> None:
 def device_list() -> list[dict]:
     with LOCK:
         return [device.public() for device in DEVICES.values()]
+
+
+def normalize_media_item(payload: dict) -> dict:
+    """Validate a playable item and give it a server-owned queue id."""
+    url = str(payload.get("url", "")).strip()
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Use a direct HTTP or HTTPS media URL.")
+    content_type = str(payload.get("contentType", "video/mp4")).strip()[:120] or "video/mp4"
+    title = str(payload.get("title", "")).strip()[:160] or "CastDeck media"
+    return {
+        "id": uuid.uuid4().hex,
+        "url": url,
+        "title": title,
+        "contentType": content_type,
+        "streamType": "LIVE" if "mpegurl" in content_type.lower() else "BUFFERED",
+    }
+
+
+def queue_snapshot(device: CastDevice) -> list[dict]:
+    with device.queue_lock:
+        return [dict(item) for item in device.media_queue]
+
+
+def status_with_queue(device: CastDevice, status: dict) -> dict:
+    return {**status, "queue": queue_snapshot(device)}
+
+
+def replace_queue(device: CastDevice, items: list[dict]) -> None:
+    with device.queue_lock:
+        device.media_queue[:] = items
+
+
+def remove_queued_item(device: CastDevice, item_id: str) -> bool:
+    with device.queue_lock:
+        for index, item in enumerate(device.media_queue):
+            if item["id"] == item_id:
+                device.media_queue.pop(index)
+                return True
+    return False
+
+
+def pop_queued_item(device: CastDevice) -> dict | None:
+    with device.queue_lock:
+        return device.media_queue.pop(0) if device.media_queue else None
+
+
+def restore_queued_item(device: CastDevice, item: dict) -> None:
+    with device.queue_lock:
+        device.media_queue.insert(0, item)
+
+
+def play_media_item(media_controller, item: dict) -> None:
+    media_controller.play_media(
+        item["url"], item["contentType"], title=item["title"], autoplay=True,
+        stream_type=item["streamType"],
+    )
+    media_controller.block_until_active(timeout=10)
+
+
+def schedule_queue_advance(device: CastDevice) -> None:
+    """Advance after a finished item without blocking the Cast callback thread."""
+    with device.queue_lock:
+        if device.queue_advancing or not device.media_queue:
+            return
+        device.queue_advancing = True
+    threading.Thread(target=advance_queue_worker, args=(device,), daemon=True).start()
+
+
+def advance_queue_worker(device: CastDevice) -> None:
+    item = None
+    try:
+        item = pop_queued_item(device)
+        if item is None:
+            return
+        with device.connection_lock:
+            cast = connected_cast(device)
+            play_media_item(cast.media_controller, item)
+            status = status_with_queue(device, cast_status_payload(cast))
+        broadcast("status", {"id": device.id, "status": status})
+    except Exception as error:
+        if item is not None:
+            restore_queued_item(device, item)
+        print(f"Queue advance failed for {device.name}: {friendly_error(error)}", flush=True)
+    finally:
+        with device.queue_lock:
+            device.queue_advancing = False
 
 
 def media_list(port: int) -> list[dict]:
@@ -184,8 +284,10 @@ def get_demo_status(device_id: str) -> dict:
 def patch_demo_status(device_id: str, **changes) -> dict:
     status = get_demo_status(device_id)
     status.update(changes)
-    broadcast("status", {"id": device_id, "status": status})
-    return status
+    device = DEVICES[device_id]
+    public_status = status_with_queue(device, status)
+    broadcast("status", {"id": device_id, "status": public_status})
+    return public_status
 
 
 def image_url(images) -> str:
@@ -216,7 +318,7 @@ def cast_status_payload(cast) -> dict:
 
 def cast_status(device: CastDevice) -> dict:
     with device.connection_lock:
-        return cast_status_payload(connected_cast(device))
+        return status_with_queue(device, cast_status_payload(connected_cast(device)))
 
 
 def connected_cast(device: CastDevice):
@@ -263,7 +365,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def read_json(self) -> dict:
-        length = min(int(self.headers.get("Content-Length", "0") or 0), 32768)
+        length = min(int(self.headers.get("Content-Length", "0") or 0), 1048576)
         return json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
 
     def get_device(self, device_id: str) -> CastDevice:
@@ -287,7 +389,8 @@ class Handler(BaseHTTPRequestHandler):
         if len(parts) == 4 and parts[:2] == ["api", "devices"] and parts[3] == "status":
             try:
                 device = self.get_device(parts[2])
-                return self.send_json(get_demo_status(device.id) if DEMO_MODE else cast_status(device))
+                status = status_with_queue(device, get_demo_status(device.id)) if DEMO_MODE else cast_status(device)
+                return self.send_json(status)
             except KeyError as error:
                 return self.send_json({"error": str(error.args[0])}, HTTPStatus.NOT_FOUND)
             except Exception as error:
@@ -316,29 +419,69 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": friendly_error(error)}, HTTPStatus.BAD_GATEWAY)
 
     def perform_action(self, device: CastDevice, action: str, payload: dict):
-        if action not in {"play-url", "play", "pause", "stop", "seek", "volume", "mute"}:
+        allowed = {
+            "play-url", "play-sequence", "enqueue", "queue-next", "queue-remove", "queue-clear",
+            "play", "pause", "stop", "seek", "volume", "mute",
+        }
+        if action not in allowed:
             raise KeyError("Unknown control.")
         if DEMO_MODE:
             return self.perform_demo_action(device, action, payload)
+        if action == "queue-remove":
+            if not remove_queued_item(device, str(payload.get("id", ""))):
+                raise KeyError("That queued item no longer exists.")
+            return cast_status(device)
+        if action == "queue-clear":
+            replace_queue(device, [])
+            return cast_status(device)
         with device.connection_lock:
             cast = connected_cast(device)
             media = cast.media_controller
             if action == "play-url":
-                url = str(payload.get("url", "")).strip()
-                parsed = urlparse(url)
-                if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-                    raise ValueError("Use a direct HTTP or HTTPS media URL.")
-                content_type = str(payload.get("contentType", "video/mp4")).strip() or "video/mp4"
-                title = str(payload.get("title", "")).strip() or "CastDeck media"
-                stream_type = "LIVE" if "mpegurl" in content_type.lower() else "BUFFERED"
-                media.play_media(url, content_type, title=title, autoplay=True, stream_type=stream_type)
-                media.block_until_active(timeout=10)
+                item = normalize_media_item(payload)
+                replace_queue(device, [])
+                play_media_item(media, item)
+            elif action == "play-sequence":
+                raw_items = payload.get("items")
+                if not isinstance(raw_items, list) or not raw_items:
+                    raise ValueError("Choose at least one media item.")
+                if len(raw_items) > 500:
+                    raise ValueError("A queue can contain at most 500 items.")
+                if not all(isinstance(item, dict) for item in raw_items):
+                    raise ValueError("Every queue entry must be a media item.")
+                items = [normalize_media_item(item) for item in raw_items]
+                replace_queue(device, items[1:])
+                play_media_item(media, items[0])
+            elif action == "enqueue":
+                item = normalize_media_item(payload)
+                with device.queue_lock:
+                    device.media_queue.append(item)
+                if not getattr(media.status, "content_id", None) or getattr(media.status, "player_state", "IDLE") == "IDLE":
+                    next_item = pop_queued_item(device)
+                    if next_item is not None:
+                        try:
+                            play_media_item(media, next_item)
+                        except Exception:
+                            restore_queued_item(device, next_item)
+                            raise
+            elif action == "queue-next":
+                item = pop_queued_item(device)
+                if item is None:
+                    raise ValueError("The queue is empty.")
+                try:
+                    play_media_item(media, item)
+                except Exception:
+                    restore_queued_item(device, item)
+                    raise
             elif action == "volume":
                 cast.set_volume(max(0.0, min(1.0, float(payload.get("level", 0)))))
             elif action == "mute":
                 cast.set_volume_muted(bool(payload.get("muted", False)))
             elif action == "seek":
                 media.seek(max(0.0, float(payload.get("time", 0))))
+            elif action == "stop":
+                replace_queue(device, [])
+                media.stop()
             else:
                 getattr(media, action)()
             return cast_status(device)
@@ -346,15 +489,51 @@ class Handler(BaseHTTPRequestHandler):
     def perform_demo_action(self, device: CastDevice, action: str, payload: dict) -> dict:
         current = get_demo_status(device.id)
         if action == "play-url":
-            url = str(payload.get("url", "")).strip()
-            parsed = urlparse(url)
-            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-                raise ValueError("Use a direct HTTP or HTTPS media URL.")
-            title = str(payload.get("title", "")).strip() or "CastDeck media"
+            item = normalize_media_item(payload)
+            replace_queue(device, [])
             return patch_demo_status(device.id, playerState="PLAYING", media={
-                "title": title, "subtitle": parsed.hostname, "image": "", "currentTime": 0,
-                "duration": 600, "contentId": url})
+                "title": item["title"], "subtitle": urlparse(item["url"]).hostname, "image": "", "currentTime": 0,
+                "duration": 600, "contentId": item["url"]})
+        if action == "play-sequence":
+            raw_items = payload.get("items")
+            if not isinstance(raw_items, list) or not raw_items:
+                raise ValueError("Choose at least one media item.")
+            if len(raw_items) > 500:
+                raise ValueError("A queue can contain at most 500 items.")
+            if not all(isinstance(item, dict) for item in raw_items):
+                raise ValueError("Every queue entry must be a media item.")
+            items = [normalize_media_item(item) for item in raw_items]
+            replace_queue(device, items[1:])
+            first = items[0]
+            return patch_demo_status(device.id, playerState="PLAYING", media={
+                "title": first["title"], "subtitle": urlparse(first["url"]).hostname, "image": "", "currentTime": 0,
+                "duration": 600, "contentId": first["url"]})
+        if action == "enqueue":
+            item = normalize_media_item(payload)
+            if current.get("playerState") == "IDLE" or not current.get("media"):
+                return patch_demo_status(device.id, playerState="PLAYING", media={
+                    "title": item["title"], "subtitle": urlparse(item["url"]).hostname, "image": "", "currentTime": 0,
+                    "duration": 600, "contentId": item["url"]})
+            with device.queue_lock:
+                device.media_queue.append(item)
+            return patch_demo_status(device.id)
+        if action == "queue-next":
+            item = pop_queued_item(device)
+            if item is None:
+                raise ValueError("The queue is empty.")
+            return patch_demo_status(device.id, playerState="PLAYING", media={
+                "title": item["title"], "subtitle": urlparse(item["url"]).hostname, "image": "", "currentTime": 0,
+                "duration": 600, "contentId": item["url"]})
+        if action == "queue-remove":
+            if not remove_queued_item(device, str(payload.get("id", ""))):
+                raise KeyError("That queued item no longer exists.")
+            return patch_demo_status(device.id)
+        if action == "queue-clear":
+            replace_queue(device, [])
+            return patch_demo_status(device.id)
         if action in {"play", "pause", "stop"}:
+            if action == "stop":
+                replace_queue(device, [])
             return patch_demo_status(device.id, playerState={"play": "PLAYING", "pause": "PAUSED", "stop": "IDLE"}[action])
         if action == "seek" and current.get("media"):
             current["media"]["currentTime"] = max(0, float(payload.get("time", 0)))
@@ -362,8 +541,9 @@ class Handler(BaseHTTPRequestHandler):
             current["volume"]["level"] = max(0, min(1, float(payload.get("level", 0))))
         elif action == "mute":
             current["volume"]["muted"] = bool(payload.get("muted", False))
-        broadcast("status", {"id": device.id, "status": current})
-        return current
+        public_status = status_with_queue(device, current)
+        broadcast("status", {"id": device.id, "status": public_status})
+        return public_status
 
     def event_stream(self) -> None:
         stream: queue.Queue = queue.Queue(maxsize=20)

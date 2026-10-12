@@ -16,6 +16,5 @@ if not exist ".venv\Scripts\python.exe" (
     exit /b 1
   )
 )
-start "" http://127.0.0.1:4173
 ".venv\Scripts\python.exe" server.py --host 0.0.0.0
 endlocal

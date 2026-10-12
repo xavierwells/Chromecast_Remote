@@ -44,7 +44,6 @@ DEFAULTS = {
     "media_dirs": [str(application_dir() / "media")],
     "port": 4173,
     "lan_access": True,
-    "open_browser": True,
     "auto_start": False,
 }
 
@@ -95,7 +94,6 @@ class SettingsDialog:
 
         self.port = tk.StringVar(value=str(owner.config["port"]))
         self.lan_access = tk.BooleanVar(value=bool(owner.config["lan_access"]))
-        self.open_browser = tk.BooleanVar(value=bool(owner.config["open_browser"]))
         self.auto_start = tk.BooleanVar(value=bool(owner.config["auto_start"]))
 
         shell = ttk.Frame(self.window, padding=18)
@@ -123,8 +121,7 @@ class SettingsDialog:
         ttk.Label(network, text="Port:").grid(row=0, column=0, sticky="w")
         ttk.Entry(network, textvariable=self.port, width=9).grid(row=0, column=1, sticky="w", padx=(6, 18))
         ttk.Checkbutton(network, text="Allow phones and tablets on this LAN", variable=self.lan_access).grid(row=0, column=2, sticky="w")
-        ttk.Checkbutton(network, text="Open controller after starting", variable=self.open_browser).grid(row=1, column=0, columnspan=3, sticky="w", pady=(9, 0))
-        ttk.Checkbutton(network, text="Start server when CastDeck opens", variable=self.auto_start).grid(row=2, column=0, columnspan=3, sticky="w", pady=(5, 0))
+        ttk.Checkbutton(network, text="Start server when CastDeck opens", variable=self.auto_start).grid(row=1, column=0, columnspan=3, sticky="w", pady=(9, 0))
 
         actions = ttk.Frame(shell)
         actions.pack(fill="x", pady=(16, 0))
@@ -157,7 +154,6 @@ class SettingsDialog:
             "media_dirs": [str(Path(item).expanduser().resolve()) for item in directories],
             "port": port,
             "lan_access": self.lan_access.get(),
-            "open_browser": self.open_browser.get(),
             "auto_start": self.auto_start.get(),
         }
         try:
@@ -326,8 +322,6 @@ class CastDeckLauncher:
         self.qr_button.configure(state="normal")
         self.refresh_addresses()
         self.update_tray_menu()
-        if self.config["open_browser"]:
-            self.open_controller()
 
     def server_failed(self, message: str) -> None:
         self.stop(show_status=False)

@@ -1,7 +1,7 @@
 const state = { devices: [], selectedId: localStorage.getItem('castdeck-selected'), status: null, statusAt: 0, mediaFiles: [], busy: false, seekOffset: 0, seekBase: 0, seekTimer: null };
 
 const els = Object.fromEntries([
-  'deviceList','deviceCount','emptyState','controller','selectedName','selectedMeta','mediaTitle','mediaSubtitle','playbackLabel','artwork','seekSlider','elapsedTime','durationTime','playPauseButton','stopButton','seekStack','volumeSlider','volumeValue','muteButton','castForm','mediaUrl','mediaTitleInput','contentType','mediaRefreshButton','localMediaList','refreshButton','toast'
+  'deviceList','deviceCount','emptyState','controller','selectedName','selectedMeta','mediaTitle','mediaSubtitle','playbackLabel','artwork','seekSlider','elapsedTime','durationTime','playPauseButton','stopButton','seekStack','volumeSlider','volumeValue','muteButton','castForm','mediaUrl','mediaTitleInput','contentType','urlQueueButton','queueCount','queueList','queueNextButton','queueClearButton','mediaPlayAllButton','mediaRefreshButton','localMediaList','refreshButton','toast'
 ].map((id) => [id, document.getElementById(id)]));
 
 function selectedDevice() { return state.devices.find((device) => device.id === state.selectedId); }
@@ -11,6 +11,7 @@ function formatBytes(bytes) { const value = Number(bytes) || 0; if (value < 1024
 function setRangeFill(input) { const min = Number(input.min || 0); const max = Number(input.max || 100); const fill = ((Number(input.value) - min) / Math.max(1, max - min)) * 100; input.style.setProperty('--fill', `${fill}%`); }
 function showToast(message, error = false) { els.toast.textContent = message; els.toast.className = `toast show${error ? ' error' : ''}`; clearTimeout(showToast.timer); showToast.timer = setTimeout(() => els.toast.className = 'toast', 2800); }
 function setStatus(status) { state.status = status; state.statusAt = Date.now(); renderStatus(); }
+function mediaPayload(item) { return { url: item.castUrl, title: item.name, contentType: item.contentType }; }
 
 async function api(path, options = {}) {
   const response = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
@@ -47,12 +48,38 @@ function renderMedia() {
     return `<div class="media-item">
       <span class="media-kind">${escapeHtml(kind)}</span>
       <span class="media-copy"><strong>${escapeHtml(item.name)}</strong><span>${escapeHtml(item.sourceName || 'Media')} · ${escapeHtml(item.fileName)} · ${formatBytes(item.size)}</span></span>
-      <button class="media-cast" type="button" data-media-index="${index}">CAST ›</button>
+      <span class="media-actions">
+        <button class="media-play" type="button" data-media-index="${index}" title="Play this item, then every item after it">PLAY FROM HERE ›</button>
+        <button class="media-queue" type="button" data-media-index="${index}" title="Add to the end of Up Next">+ QUEUE</button>
+      </span>
     </div>`;
   }).join('');
-  els.localMediaList.querySelectorAll('.media-cast').forEach((button) => button.addEventListener('click', () => {
+  els.localMediaList.querySelectorAll('.media-play').forEach((button) => button.addEventListener('click', () => {
+    const index = Number(button.dataset.mediaIndex);
+    const items = state.mediaFiles.slice(index, index + 500).map(mediaPayload);
+    castPayload('play-sequence', { items }, button, `Playing from ${state.mediaFiles[index].name}`);
+  }));
+  els.localMediaList.querySelectorAll('.media-queue').forEach((button) => button.addEventListener('click', () => {
     const item = state.mediaFiles[Number(button.dataset.mediaIndex)];
-    castPayload({ url: item.castUrl, title: item.name, contentType: item.contentType }, button);
+    castPayload('enqueue', mediaPayload(item), button, `${item.name} added to Up Next`);
+  }));
+}
+
+function renderQueue(queue = []) {
+  els.queueCount.textContent = `${queue.length} ${queue.length === 1 ? 'item' : 'items'}`;
+  els.queueNextButton.disabled = !queue.length || state.busy;
+  els.queueClearButton.disabled = !queue.length || state.busy;
+  if (!queue.length) {
+    els.queueList.innerHTML = '<div class="queue-empty">The next item you add will appear here.</div>';
+    return;
+  }
+  els.queueList.innerHTML = queue.map((item, index) => `<div class="queue-item">
+    <span class="queue-position">${index + 1}</span>
+    <span class="queue-copy"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.contentType)}</span></span>
+    <button class="queue-remove" type="button" data-queue-id="${escapeHtml(item.id)}" aria-label="Remove ${escapeHtml(item.title)} from queue">×</button>
+  </div>`).join('');
+  els.queueList.querySelectorAll('.queue-remove').forEach((button) => button.addEventListener('click', () => {
+    control('queue-remove', { id: button.dataset.queueId });
   }));
 }
 
@@ -95,6 +122,7 @@ function renderStatus() {
   } else {
     els.artwork.style.backgroundImage = '';
   }
+  renderQueue(Array.isArray(status.queue) ? status.queue : []);
 }
 
 async function loadDevices() {
@@ -132,11 +160,13 @@ async function control(action, body = {}) {
     if (result && result.volume) setStatus(result);
     await loadStatus(true);
   } catch (error) { showToast(error.message, true); }
-  finally { state.busy = false; }
+  finally { state.busy = false; renderQueue(Array.isArray(state.status && state.status.queue) ? state.status.queue : []); }
 }
 
 els.playPauseButton.addEventListener('click', () => control(state.status && state.status.playerState === 'PLAYING' ? 'pause' : 'play'));
 els.stopButton.addEventListener('click', () => control('stop'));
+els.queueNextButton.addEventListener('click', () => control('queue-next'));
+els.queueClearButton.addEventListener('click', () => control('queue-clear'));
 
 function resetSeekQueue() {
   clearTimeout(state.seekTimer);
@@ -180,6 +210,10 @@ els.volumeSlider.addEventListener('change', () => control('volume', { level: Num
 els.muteButton.addEventListener('click', () => control('mute', { muted: !(state.status && state.status.volume && state.status.volume.muted) }));
 els.refreshButton.addEventListener('click', () => { loadDevices(); showToast('Device list refreshed'); });
 els.mediaRefreshButton.addEventListener('click', () => { loadMedia(); showToast('Local media refreshed'); });
+els.mediaPlayAllButton.addEventListener('click', () => {
+  if (!state.mediaFiles.length) return showToast('No local media to play', true);
+  castPayload('play-sequence', { items: state.mediaFiles.slice(0, 500).map(mediaPayload) }, els.mediaPlayAllButton, 'Playing local library');
+});
 
 els.mediaUrl.addEventListener('input', () => {
   const url = els.mediaUrl.value.toLowerCase();
@@ -188,26 +222,36 @@ els.mediaUrl.addEventListener('input', () => {
   else if (url.includes('.aac')) els.contentType.value = 'audio/aac';
 });
 
-async function castPayload(payload, button) {
+async function castPayload(action, payload, button, successMessage) {
   if (!state.selectedId || state.busy) return;
   const originalLabel = button.innerHTML;
-  state.busy = true; button.disabled = true; button.textContent = 'CASTING…';
+  state.busy = true; button.disabled = true; button.textContent = action === 'enqueue' ? 'ADDING…' : 'LOADING…';
   try {
-    const result = await api(`/api/devices/${encodeURIComponent(state.selectedId)}/play-url`, {
+    const result = await api(`/api/devices/${encodeURIComponent(state.selectedId)}/${action}`, {
       method: 'POST',
       body: JSON.stringify(payload),
     });
     if (result && result.volume) setStatus(result);
-    showToast(`Casting to ${selectedDevice().name}`);
+    showToast(successMessage || `Playing on ${selectedDevice().name}`);
     await loadStatus(true);
   } catch (error) { showToast(error.message, true); }
-  finally { state.busy = false; button.disabled = false; button.innerHTML = originalLabel; }
+  finally {
+    state.busy = false;
+    button.disabled = false;
+    button.innerHTML = originalLabel;
+    renderQueue(Array.isArray(state.status && state.status.queue) ? state.status.queue : []);
+  }
 }
 
 els.castForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   const button = els.castForm.querySelector('button[type=submit]');
-  await castPayload({ url: els.mediaUrl.value, title: els.mediaTitleInput.value, contentType: els.contentType.value }, button);
+  await castPayload('play-url', { url: els.mediaUrl.value, title: els.mediaTitleInput.value, contentType: els.contentType.value }, button);
+});
+
+els.urlQueueButton.addEventListener('click', async () => {
+  if (!els.mediaUrl.reportValidity()) return;
+  await castPayload('enqueue', { url: els.mediaUrl.value, title: els.mediaTitleInput.value, contentType: els.contentType.value }, els.urlQueueButton, 'Media added to Up Next');
 });
 
 const events = new EventSource('/api/events');
