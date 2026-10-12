@@ -39,7 +39,7 @@ function renderDevices() {
 
 function renderMedia() {
   if (!state.mediaFiles.length) {
-    els.localMediaList.innerHTML = '<div class="media-empty"><strong>No local media yet.</strong><br>Copy MP4, WebM, MP3, M4A, AAC, WAV, FLAC, OGG, or HLS files into<br>D:\\Chromecast_Remote\\media, then refresh.</div>';
+    els.localMediaList.innerHTML = '<div class="media-empty"><strong>No local media yet.</strong><br>Add MP4, WebM, MP3, M4A, AAC, WAV, FLAC, OGG, or HLS files to<br>the folder selected in the CastDeck server window, then refresh.</div>';
     return;
   }
   els.localMediaList.innerHTML = state.mediaFiles.map((item, index) => {

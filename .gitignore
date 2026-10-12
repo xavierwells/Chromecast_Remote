@@ -8,3 +8,8 @@ __pycache__/
 !.env.example
 media/
 *.log
+
+# PyInstaller output
+build/
+dist/
+*.spec

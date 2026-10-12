@@ -19,9 +19,10 @@ from urllib.parse import quote, unquote, urlparse
 
 import pychromecast
 
-ROOT = Path(__file__).resolve().parent
-PUBLIC = ROOT / "public"
-MEDIA_DIR = Path(os.environ.get("CASTDECK_MEDIA_DIR", ROOT / "media")).resolve()
+SOURCE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+APP_DIR = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
+PUBLIC = SOURCE_DIR / "public"
+MEDIA_DIR = Path(os.environ.get("CASTDECK_MEDIA_DIR", APP_DIR / "media")).expanduser().resolve()
 MEDIA_TYPES = {
     ".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm",
     ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".aac": "audio/aac",

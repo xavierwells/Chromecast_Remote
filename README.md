@@ -24,7 +24,26 @@ Discover receivers, see what is playing, control playback and volume, stack quic
 
 CastDeck runs on the computer and opens its controller to the local network. A phone on the same Wi-Fi uses the LAN address printed by the server; no phone app or account is required.
 
+## Run it on another Windows PC
+
+The easiest option is the portable executable at `dist\CastDeck.exe`. It contains Python, PyChromecast, and the complete web interface, so the other PC does not need Python or a source checkout.
+
+1. Copy `CastDeck.exe` to the other Windows PC.
+2. Double-click it to open the **CastDeck Server** configurator.
+3. Choose the folder containing local media.
+4. Leave port `4173` unless it conflicts with another program.
+5. Keep **Allow phones and tablets on this LAN** enabled.
+6. Select **Start CastDeck**.
+7. If Windows Firewall asks, allow it on **private networks** only.
+8. Open the phone URL displayed in the server window from a device on the same Wi-Fi.
+
+The configurator also controls whether the browser opens automatically and whether the server starts as soon as CastDeck launches. Settings are stored per PC in `%LOCALAPPDATA%\CastDeck\config.json`; media files remain in the folder you selected.
+
+Keep the CastDeck Server window open while using the controller. Closing it stops the server. An already-buffered remote stream may continue, but local media served by that PC can stop loading.
+
 ## Quick start on Windows
+
+This source-based method is useful for development. For another PC, the single-file executable above is simpler.
 
 ### One click
 
@@ -140,10 +159,24 @@ castdeck/
 │   └── styles.css      # CastDeck visual design
 ├── docs/screenshots/   # README demo images
 ├── media/              # Local files available to cast
+├── launcher.py         # Native server configurator and EXE entry point
 ├── server.py           # HTTP server, Cast bridge, SSE, and media serving
 ├── requirements.txt    # Python dependency lock
+├── requirements-build.txt
+├── build-exe.bat       # Produces the portable Windows executable
 └── start.bat           # Windows one-click launcher
 ```
+
+## Build the executable
+
+Double-click `build-exe.bat`, or run:
+
+```powershell
+.venv\Scripts\python -m pip install -r requirements-build.txt
+.venv\Scripts\python -m PyInstaller --noconfirm --clean --onefile --windowed --name CastDeck --add-data "public;public" launcher.py
+```
+
+The portable result is `dist\CastDeck.exe`. Build artifacts in `build`, `dist`, and the generated `.spec` file are intentionally ignored by Git.
 
 ## Dependency
 
