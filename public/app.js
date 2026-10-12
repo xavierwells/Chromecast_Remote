@@ -1,7 +1,7 @@
 const state = { devices: [], selectedId: localStorage.getItem('castdeck-selected'), status: null, statusAt: 0, mediaFiles: [], busy: false, seekOffset: 0, seekBase: 0, seekTimer: null };
 
 const els = Object.fromEntries([
-  'deviceList','deviceCount','emptyState','controller','selectedName','selectedMeta','mediaTitle','mediaSubtitle','playbackLabel','artwork','seekSlider','elapsedTime','durationTime','playPauseButton','stopButton','seekStack','backgroundButton','backgroundOffButton','backgroundHint','volumeSlider','volumeValue','muteButton','castForm','mediaUrl','mediaTitleInput','contentType','urlQueueButton','queueCount','queueList','queueNextButton','queueClearButton','mediaPlayAllButton','mediaRefreshButton','localMediaList','refreshButton','toast'
+  'deviceList','deviceCount','emptyState','controller','selectedName','selectedMeta','mediaTitle','mediaSubtitle','playbackLabel','artwork','seekSlider','elapsedTime','durationTime','playPauseButton','stopButton','seekStack','backgroundButton','backgroundOffButton','backgroundHint','volumeSlider','volumeValue','muteButton','castForm','mediaUrl','mediaTitleInput','contentType','urlQueueButton','queueCount','queueList','queueError','queueNextButton','queueClearButton','mediaPlayAllButton','mediaRefreshButton','localMediaList','refreshButton','toast'
 ].map((id) => [id, document.getElementById(id)]));
 
 function selectedDevice() { return state.devices.find((device) => device.id === state.selectedId); }
@@ -66,6 +66,9 @@ function renderMedia() {
 }
 
 function renderQueue(queue = []) {
+  const queueError = state.status && state.status.queueError;
+  els.queueError.classList.toggle('hidden', !queueError);
+  els.queueError.textContent = queueError ? `Could not start the next item: ${queueError} Try Next to retry, or remove this item.` : '';
   els.queueCount.textContent = `${queue.length} ${queue.length === 1 ? 'item' : 'items'}`;
   els.queueNextButton.disabled = !queue.length || state.busy;
   els.queueClearButton.disabled = !queue.length || state.busy;

@@ -11,6 +11,7 @@ import signal
 import socket
 import sys
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from http import HTTPStatus
@@ -19,6 +20,7 @@ from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
 
 import pychromecast
+from pychromecast.controllers.media import MediaController, MediaStatus
 from zeroconf import IPVersion, ServiceInfo, Zeroconf
 
 SOURCE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
@@ -76,10 +78,27 @@ class CastDevice:
     queue_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
     queue_advancing: bool = field(default=False, repr=False)
     last_finished_marker: tuple | None = field(default=None, repr=False)
+    queue_generation: int = field(default=0, repr=False)
+    queue_loading: bool = field(default=False, repr=False)
+    queue_error: str = field(default="", repr=False)
+    status_changed: threading.Event = field(default_factory=threading.Event, repr=False)
 
     def public(self) -> dict:
         return {"id": self.id, "name": self.name, "model": self.model,
                 "host": self.host, "port": self.port, "online": True}
+
+
+class CastDeckMediaController(MediaController):
+    """Handle an empty receiver status instead of keeping stale PLAYING data."""
+
+    def _process_media_status(self, data: dict) -> None:
+        if data.get("status") == []:
+            self.status = MediaStatus()
+            self.status.player_state = "IDLE"
+            self.status.empty_status = True
+        else:
+            self.status.empty_status = False
+        super()._process_media_status(data)
 
 
 class DeviceStatusListener:
@@ -87,10 +106,12 @@ class DeviceStatusListener:
 
     def __init__(self, device: CastDevice):
         self.device = device
+        self.cast = device.cast
+        self.progress = None
 
     def publish(self) -> None:
         cast = self.device.cast
-        if cast is not None:
+        if cast is not None and cast is self.cast:
             status = status_with_queue(self.device, cast_status_payload(cast))
             broadcast("status", {"id": self.device.id, "status": status})
 
@@ -98,10 +119,40 @@ class DeviceStatusListener:
         self.publish()
 
     def new_media_status(self, status) -> None:
+        if self.device.cast is not self.cast:
+            return
+        self.device.status_changed.set()
         self.publish()
-        if getattr(status, "player_state", "") == "IDLE" and getattr(status, "idle_reason", "") == "FINISHED":
-            marker = (getattr(status, "media_session_id", None), getattr(status, "content_id", None))
+        state = getattr(status, "player_state", "")
+        reason = getattr(status, "idle_reason", None)
+        marker = (getattr(status, "media_session_id", None), getattr(status, "content_id", None))
+        now = time.monotonic()
+        if state == "PLAYING":
+            self.progress = {
+                "marker": marker, "duration": float(getattr(status, "duration", 0) or 0),
+                "position": float(getattr(status, "adjusted_current_time", 0) or 0),
+                "at": now, "rate": float(getattr(status, "playback_rate", 1) or 1),
+            }
+            return
+        previous = self.progress
+        if state == "BUFFERING":
+            return
+        self.progress = None
+        finished = state == "IDLE" and reason == "FINISHED"
+        # Some receivers omit idleReason or return status: [] at the end. Only
+        # infer completion after a recent PLAYING update near a known duration.
+        # Never infer it from a pause, transport disconnect, error, or STOP.
+        if state == "IDLE" and reason is None and previous:
+            same_media = marker == previous["marker"] or getattr(status, "empty_status", False)
+            age = now - previous["at"]
+            position = previous["position"] + age * previous["rate"]
+            finished = same_media and 0 <= age <= 5 and previous["duration"] > 0 and position >= previous["duration"] - 1
+            if finished:
+                marker = previous["marker"]
+        if finished:
             with self.device.queue_lock:
+                if self.device.queue_loading:
+                    return
                 if marker == self.device.last_finished_marker:
                     return
                 self.device.last_finished_marker = marker
@@ -111,6 +162,16 @@ class DeviceStatusListener:
 def attach_status_listener(device: CastDevice) -> None:
     if device.cast is None:
         return
+    cast = device.cast
+    if not isinstance(cast.media_controller, CastDeckMediaController):
+        old = cast.media_controller
+        controller = CastDeckMediaController()
+        controller.status = old.status
+        controller.session_active_event = old.session_active_event
+        cast.socket_client.unregister_handler(old)
+        cast.socket_client.media_controller = controller
+        cast.register_handler(controller)
+        cast.play_media = controller.play_media
     listener = DeviceStatusListener(device)
     device.status_listener = listener
     device.cast.register_status_listener(listener)
@@ -145,12 +206,15 @@ def queue_snapshot(device: CastDevice) -> list[dict]:
 
 
 def status_with_queue(device: CastDevice, status: dict) -> dict:
-    return {**status, "queue": queue_snapshot(device)}
+    with device.queue_lock:
+        return {**status, "queue": queue_snapshot(device), "queueError": device.queue_error}
 
 
 def replace_queue(device: CastDevice, items: list[dict]) -> None:
     with device.queue_lock:
         device.media_queue[:] = items
+        device.queue_generation += 1
+        device.queue_error = ""
 
 
 def remove_queued_item(device: CastDevice, item_id: str) -> bool:
@@ -158,6 +222,8 @@ def remove_queued_item(device: CastDevice, item_id: str) -> bool:
         for index, item in enumerate(device.media_queue):
             if item["id"] == item_id:
                 device.media_queue.pop(index)
+                if index == 0:
+                    device.queue_error = ""
                 return True
     return False
 
@@ -172,12 +238,51 @@ def restore_queued_item(device: CastDevice, item: dict) -> None:
         device.media_queue.insert(0, item)
 
 
-def play_media_item(media_controller, item: dict) -> None:
-    media_controller.play_media(
-        item["url"], item["contentType"], title=item["title"], autoplay=True,
-        stream_type=item["streamType"],
-    )
-    media_controller.block_until_active(timeout=10)
+def play_media_item(device: CastDevice, media_controller, item: dict, timeout: float = 12) -> None:
+    """Wait for this item to load, rather than an already-active old session."""
+    response_received = threading.Event()
+    load_error = []
+
+    def response(sent: bool, data: dict | None) -> None:
+        if not sent or data and data.get("type") in {"LOAD_FAILED", "LOAD_CANCELLED", "INVALID_REQUEST"}:
+            load_error.append("The Chromecast rejected the media load.")
+        response_received.set()
+        device.status_changed.set()
+
+    with device.queue_lock:
+        device.queue_loading = True
+        device.queue_error = ""
+    device.status_changed.clear()
+    try:
+        media_controller.play_media(
+            item["url"], item["contentType"], title=item["title"], autoplay=True,
+            stream_type=item["streamType"], callback_function=response,
+        )
+        deadline = time.monotonic() + timeout
+        status_observed = False
+        while True:
+            status_observed = status_observed or device.status_changed.is_set()
+            if load_error:
+                raise RuntimeError(load_error[0])
+            status = media_controller.status
+            observed = response_received.is_set() or status_observed
+            if observed and getattr(status, "content_id", None) == item["url"]:
+                if getattr(status, "player_state", "") in {"PLAYING", "PAUSED", "BUFFERING"}:
+                    return
+                if getattr(status, "idle_reason", None) == "ERROR":
+                    raise RuntimeError("The Chromecast could not play this file. Check its format and media URL.")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError("The Chromecast did not confirm the next item started. Check the media URL and connection.")
+            status_observed = device.status_changed.wait(min(0.2, remaining)) or status_observed
+            device.status_changed.clear()
+    except Exception as error:
+        with device.queue_lock:
+            device.queue_error = friendly_error(error)
+        raise
+    finally:
+        with device.queue_lock:
+            device.queue_loading = False
 
 
 def schedule_queue_advance(device: CastDevice) -> None:
@@ -186,27 +291,57 @@ def schedule_queue_advance(device: CastDevice) -> None:
         if device.queue_advancing or not device.media_queue:
             return
         device.queue_advancing = True
-    threading.Thread(target=advance_queue_worker, args=(device,), daemon=True).start()
+        generation = device.queue_generation
+    threading.Thread(target=advance_queue_worker, args=(device, generation), daemon=True).start()
 
 
-def advance_queue_worker(device: CastDevice) -> None:
+def advance_queue_worker(device: CastDevice, generation: int) -> None:
     item = None
     try:
-        item = pop_queued_item(device)
-        if item is None:
-            return
         with device.connection_lock:
+            with device.queue_lock:
+                if generation != device.queue_generation:
+                    return
+                item = pop_queued_item(device)
+            if item is None:
+                return
             cast = connected_cast(device)
-            play_media_item(cast.media_controller, item)
+            play_media_item(device, cast.media_controller, item)
             status = status_with_queue(device, cast_status_payload(cast))
         broadcast("status", {"id": device.id, "status": status})
     except Exception as error:
-        if item is not None:
-            restore_queued_item(device, item)
+        with device.queue_lock:
+            if item is not None and generation == device.queue_generation:
+                restore_queued_item(device, item)
+                device.queue_error = friendly_error(error)
         print(f"Queue advance failed for {device.name}: {friendly_error(error)}", flush=True)
+        if device.cast is not None:
+            broadcast("status", {"id": device.id, "status": status_with_queue(device, cast_status_payload(device.cast))})
     finally:
         with device.queue_lock:
             device.queue_advancing = False
+
+
+def poll_queued_devices() -> None:
+    """Ask active receivers for fresh status while a server queue is pending."""
+    with LOCK:
+        devices = list(DEVICES.values())
+    for device in devices:
+        if not queue_snapshot(device) or device.cast is None:
+            continue
+        try:
+            cast = device.cast
+            # Reading status must not launch a receiver application or reconnect
+            # an unrelated casting session. Only poll an existing active channel.
+            if cast.socket_client.is_alive() and cast.media_controller.is_active:
+                cast.media_controller.send_message_nocheck({"type": "GET_STATUS"})
+        except Exception as error:
+            print(f"Queue status check failed for {device.name}: {friendly_error(error)}", flush=True)
+
+
+def monitor_queues(stop_event: threading.Event) -> None:
+    while not stop_event.wait(2):
+        poll_queued_devices()
 
 
 def media_list(port: int) -> list[dict]:
@@ -249,11 +384,18 @@ def broadcast(event: str, data) -> None:
 
 def add_cast(cast) -> None:
     info = cast.cast_info
-    device = CastDevice(str(info.uuid), info.friendly_name or "Chromecast",
-                        info.model_name or "Google Cast", info.host, info.port, cast, info)
-    attach_status_listener(device)
     with LOCK:
+        device = DEVICES.get(str(info.uuid))
+        if device is None:
+            device = CastDevice(str(info.uuid), info.friendly_name or "Chromecast",
+                                info.model_name or "Google Cast", info.host, info.port, cast, info)
+        else:
+            device.cast = cast
+            device.cast_info = info
+            device.host = info.host
+            device.port = info.port
         DEVICES[device.id] = device
+    attach_status_listener(device)
     broadcast("devices", device_list())
 
 
@@ -305,6 +447,7 @@ def cast_status_payload(cast) -> dict:
         "volume": {"level": float(getattr(receiver, "volume_level", 0) or 0),
                    "muted": bool(getattr(receiver, "volume_muted", False))},
         "playerState": getattr(media, "player_state", "IDLE") or "IDLE",
+        "idleReason": getattr(media, "idle_reason", None),
         "media": {
             "title": getattr(media, "title", None) or getattr(cast, "app_display_name", None) or "Now casting",
             "subtitle": getattr(media, "artist", None) or getattr(media, "series_title", None) or "",
@@ -440,7 +583,7 @@ class Handler(BaseHTTPRequestHandler):
             if action == "play-url":
                 item = normalize_media_item(payload)
                 replace_queue(device, [])
-                play_media_item(media, item)
+                play_media_item(device, media, item)
             elif action == "play-sequence":
                 raw_items = payload.get("items")
                 if not isinstance(raw_items, list) or not raw_items:
@@ -451,7 +594,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("Every queue entry must be a media item.")
                 items = [normalize_media_item(item) for item in raw_items]
                 replace_queue(device, items[1:])
-                play_media_item(media, items[0])
+                play_media_item(device, media, items[0])
             elif action == "enqueue":
                 item = normalize_media_item(payload)
                 with device.queue_lock:
@@ -460,7 +603,7 @@ class Handler(BaseHTTPRequestHandler):
                     next_item = pop_queued_item(device)
                     if next_item is not None:
                         try:
-                            play_media_item(media, next_item)
+                            play_media_item(device, media, next_item)
                         except Exception:
                             restore_queued_item(device, next_item)
                             raise
@@ -469,7 +612,7 @@ class Handler(BaseHTTPRequestHandler):
                 if item is None:
                     raise ValueError("The queue is empty.")
                 try:
-                    play_media_item(media, item)
+                    play_media_item(device, media, item)
                 except Exception:
                     restore_queued_item(device, item)
                     raise
@@ -710,6 +853,9 @@ def main() -> None:
     else:
         BROWSER = pychromecast.get_chromecasts(blocking=False, callback=add_cast)
     server = CastDeckServer((args.host, args.port), Handler)
+    queue_monitor_stop = threading.Event()
+    if not DEMO_MODE:
+        threading.Thread(target=monitor_queues, args=(queue_monitor_stop,), daemon=True).start()
     mode = " (demo mode)" if DEMO_MODE else ""
     print(f"CastDeck is ready{mode}", flush=True)
     print(f"  This computer: http://127.0.0.1:{args.port}", flush=True)
@@ -730,6 +876,7 @@ def main() -> None:
     try:
         server.serve_forever(poll_interval=0.5)
     finally:
+        queue_monitor_stop.set()
         if advertisement is not None:
             zeroconf, service = advertisement
             try:

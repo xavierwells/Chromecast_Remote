@@ -112,7 +112,9 @@ Open `http://127.0.0.1:4174`. Demo mode does not discover, connect to, or contro
 2. Start CastDeck and select a receiver.
 3. Under **Local media**, choose **Play from here** to play that item and queue the files after it, or **+ Queue** to append one item. **Play All** starts at the top of the combined library. Use **Refresh** after adding a file.
 
-The **Up Next** panel is shared by every open controller. It supports removing individual items, jumping to the next item, and clearing the queue. When the current item finishes naturally, CastDeck starts the next item automatically. Pressing **Stop** also clears Up Next.
+The **Up Next** panel is shared by every open controller. It supports removing individual items, jumping to the next item, and clearing the queue. When the current item finishes naturally, CastDeck starts the next item automatically. While items are queued, the server checks the receiver's status every two seconds, independently of the phone. Receivers that omit the finish reason are handled when a recent playback update confirms the item reached its duration. Pressing **Stop** also clears Up Next.
+
+CastDeck waits for the receiver to confirm each media load. If automatic progression fails, the item stays queued and **Up Next** displays the error. Use **Next** to retry or remove the unavailable item. Pausing, stopping, errors, and unrelated receiver disconnections do not trigger automatic progression.
 
 The computer serves the file directly across the LAN to the Chromecast. It must remain powered on, connected, and running CastDeck for the duration of playback. Do not rename or move a file while it is playing.
 
